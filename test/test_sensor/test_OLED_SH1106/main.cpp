@@ -1,11 +1,11 @@
 /**
  * TEST INDIVIDUAL: Pantalla OLED SH1106 (I²C, 128x64 píxeles)
  * 
- * Conexiones (pines alternativos):
+ * Conexiones (pines compartidos con SCD41):
  *   VCC → 3.3V
  *   GND → GND
- *   SDA → GPIO 32
- *   SCL → GPIO 33
+ *   SDA → GPIO 21
+ *   SCL → GPIO 22
  * 
  * Validaciones:
  *   - Inicialización y comunicación I²C con pines personalizados
@@ -20,9 +20,9 @@
 #include <Wire.h>
 #include <U8g2lib.h>
 
-// Definición de pines personalizados para el bus I2C de la OLED
-#define OLED_SDA 32
-#define OLED_SCL 33
+// Definición de pines para el bus I2C (compartido con SCD41)
+#define OLED_SDA 21
+#define OLED_SCL 22
 
 // Constructor del objeto U8g2: se pasa el bus Wire y los pines manualmente
 U8G2_SH1106_128X64_NONAME_1_HW_I2C oled(U8G2_R0, /* reset=*/ U8X8_PIN_NONE, /* clock=*/ OLED_SCL, /* data=*/ OLED_SDA);
@@ -102,7 +102,7 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   Serial.println("\n=== TEST OLED SH1106 ===");
-  Serial.println("Conexiones: VCC→3.3V, GND→GND, SDA→GPIO32, SCL→GPIO33");
+  Serial.println("Conexiones: VCC→3.3V, GND→GND, SDA→GPIO21, SCL→GPIO22");
   
   // Inicializar el bus I2C con los pines personalizados
   Wire.begin(OLED_SDA, OLED_SCL);
