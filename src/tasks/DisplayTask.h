@@ -12,10 +12,11 @@
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <FreeRTOS.h>
-#include <queue.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include "DataStructures.h"
 
+// El resto de tu código sigue igual...
 // ============================================================================
 // CLASE DISPLAY TASK
 // ============================================================================
