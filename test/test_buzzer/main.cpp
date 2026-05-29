@@ -1,109 +1,119 @@
 /**
- * TEST INDIVIDUAL: Active Buzzer (Zumbador activo)
- * 
+ * TEST BUZZER PASIVO + TRANSISTOR (5V)
  * Conexiones:
- *   VCC (+) → GPIO 15
- *   GND (-) → GND
- * 
- * Validaciones:
- *   - Escritura digital básica (HIGH/LOW)
- *   - Temporización con millis() no bloqueante
- *   - Secuencia de pitidos (corto, largo, pausas)
- *   - Medición de duraciones y ciclos
- *   - Comprobación de funcionamiento audible
+ *   ESP32 GPIO26 → 1kΩ → Base (2N3904/PN2222)
+ *   Emisor → GND
+ *   Colector → (-) Buzzer Pasivo
+ *   (+) Buzzer Pasivo → 5V (VIN del ESP32)
+ 
  */
+
 
 #include <Arduino.h>
 
-// Definición del pin del buzzer
-#define BUZZER_PIN 15
 
-// Variables para control de timings no bloqueante
-unsigned long lastChangeTime = 0;
-int step = 0;               // 0=buzzer ON, 1=buzzer OFF, 2=espera larga, etc.
-unsigned long stepStartTime = 0;
+#define BUZZER_PIN 26
 
-// Duración de cada fase (ms)
-const unsigned long BUZZER_ON_SHORT_MS = 200;    // pitido corto: 200 ms
-const unsigned long BUZZER_OFF_SHORT_MS = 300;   // pausa corta: 300 ms
-const unsigned long BUZZER_ON_LONG_MS = 800;     // pitido largo: 800 ms
-const unsigned long BUZZER_OFF_LONG_MS = 500;    // pausa larga: 500 ms
-const unsigned long PAUSE_BETWEEN_CYCLES_MS = 2000; // pausa entre ciclos completos
 
-// Contador de ciclos completos
-int cycleCount = 0;
+// Notas más agudas (una octava arriba para más volumen percibido)
+#define NOTE_C5  523
+#define NOTE_D5  587
+#define NOTE_E5  659
+#define NOTE_F5  698
+#define NOTE_G5  784
+#define NOTE_A5  880
+#define NOTE_B5  988
+#define NOTE_C6  1047
+#define NOTE_D6  1175
+#define NOTE_E6  1319
+
+
+// Melodía "Para Elisa" en tonos más agudos
+int melody[] = { NOTE_E6, NOTE_D6, NOTE_E6, NOTE_D6, NOTE_E6, NOTE_B5, NOTE_D6, NOTE_C6, NOTE_A5, NOTE_C5, NOTE_E5, NOTE_A5, NOTE_B5 };
+int noteDurations[] = { 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4 };
+
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("\n=== TEST ACTIVE BUZZER ===");
-  Serial.println("Conexiones: VCC(+) → GPIO 15, GND(-) → GND");
-  Serial.println("El buzzer generará pitidos cortos y largos con pausas.\n");
+  Serial.println("\n=== TEST BUZZER PASIVO (volumen mejorado) ===");
+
 
   pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);  // Asegurar apagado
+  digitalWrite(BUZZER_PIN, LOW);
 
-  // Iniciar primera secuencia
-  stepStartTime = millis();
-  step = 0;   // pitido corto
-  digitalWrite(BUZZER_PIN, HIGH);
-  Serial.println("Pitido CORTO (200 ms)");
+
+  // ------------------------------------------------------------
+  // Prueba 1: tono más agudo (2500 Hz en lugar de 1000 Hz)
+  // ------------------------------------------------------------
+  Serial.println("\n--- 1. Encendido/apagado (2.5 kHz) ---");
+  tone(BUZZER_PIN, 2500);
+  delay(1000);
+  noTone(BUZZER_PIN);
+  delay(500);
+
+
+  // ------------------------------------------------------------
+  // Prueba 2: frecuencias agudas (2 kHz, 3 kHz, 4 kHz)
+  // ------------------------------------------------------------
+  Serial.println("\n--- 2. Frecuencias agudas ---");
+  tone(BUZZER_PIN, 2000);
+  delay(800);
+  tone(BUZZER_PIN, 3000);
+  delay(800);
+  tone(BUZZER_PIN, 4000);
+  delay(800);
+  noTone(BUZZER_PIN);
+  delay(500);
+
+
+  // ------------------------------------------------------------
+  // Prueba 3: Barrido de 1500 Hz a 4500 Hz (rango más audible)
+  // ------------------------------------------------------------
+  Serial.println("\n--- 3. Barrido de frecuencias (1500→4500 Hz) ---");
+  for (int f = 1500; f <= 4500; f += 50) {
+    tone(BUZZER_PIN, f);
+    delay(8);
+  }
+  noTone(BUZZER_PIN);
+  delay(500);
+
+
+  // ------------------------------------------------------------
+  // Prueba 4: Melodía (más aguda)
+  // ------------------------------------------------------------
+  Serial.println("\n--- 4. Melodía (Para Elisa aguda) ---");
+  int numNotes = sizeof(melody) / sizeof(melody[0]);
+  for (int i = 0; i < numNotes; i++) {
+    int duration = 1000 / noteDurations[i];
+    tone(BUZZER_PIN, melody[i]);
+    delay(duration);
+    noTone(BUZZER_PIN);
+    delay(50);
+  }
+  delay(500);
+
+
+  // ------------------------------------------------------------
+  // Prueba 5: Sweep rápido (sube y baja en rango agudo)
+  // ------------------------------------------------------------
+  Serial.println("\n--- 5. Sweep sube/baja (2000→4000 Hz) ---");
+  for (int f = 2000; f <= 4000; f += 20) {
+    tone(BUZZER_PIN, f);
+    delay(4);
+  }
+  for (int f = 4000; f >= 2000; f -= 20) {
+    tone(BUZZER_PIN, f);
+    delay(4);
+  }
+  noTone(BUZZER_PIN);
+  delay(500);
+
+
+  Serial.println("\n=== TEST COMPLETADO ===");
 }
 
+
 void loop() {
-  unsigned long now = millis();
-
-  switch (step) {
-    case 0: // Pitido corto encendido
-      if (now - stepStartTime >= BUZZER_ON_SHORT_MS) {
-        digitalWrite(BUZZER_PIN, LOW);
-        stepStartTime = now;
-        step = 1;
-        Serial.println("Pausa corta (300 ms)");
-      }
-      break;
-
-    case 1: // Pausa corta
-      if (now - stepStartTime >= BUZZER_OFF_SHORT_MS) {
-        digitalWrite(BUZZER_PIN, HIGH);
-        stepStartTime = now;
-        step = 2;
-        Serial.println("Pitido LARGO (800 ms)");
-      }
-      break;
-
-    case 2: // Pitido largo encendido
-      if (now - stepStartTime >= BUZZER_ON_LONG_MS) {
-        digitalWrite(BUZZER_PIN, LOW);
-        stepStartTime = now;
-        step = 3;
-        Serial.println("Pausa larga (500 ms)");
-      }
-      break;
-
-    case 3: // Pausa larga
-      if (now - stepStartTime >= BUZZER_OFF_LONG_MS) {
-        cycleCount++;
-        Serial.print("Ciclo #");
-        Serial.print(cycleCount);
-        Serial.println(" completado. Esperando 2 segundos...");
-        // Apagar buzzer por si acaso
-        digitalWrite(BUZZER_PIN, LOW);
-        stepStartTime = now;
-        step = 4;
-      }
-      break;
-
-    case 4: // Pausa entre ciclos (2 segundos)
-      if (now - stepStartTime >= PAUSE_BETWEEN_CYCLES_MS) {
-        // Reiniciar secuencia
-        digitalWrite(BUZZER_PIN, HIGH);
-        stepStartTime = now;
-        step = 0;
-        Serial.println("Iniciando nuevo ciclo: Pitido CORTO");
-      }
-      break;
-  }
-
-  delay(1); // pequeña pausa para no saturar
+  delay(10000);
 }
