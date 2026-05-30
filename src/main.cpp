@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "tasks/SensorTask.h"
 #include "tasks/DisplayTask.h"
+#include "tasks/ButtonTask.h"          
 
 QueueHandle_t sensorDataQueue = nullptr;
 QueueHandle_t displayCommandQueue = nullptr;
@@ -27,6 +28,7 @@ void setup() {
     // Iniciar tareas
     SensorTask::start(sensorDataQueue);
     DisplayTask::start(sensorDataQueue, displayCommandQueue);
+    ButtonTask::start(displayCommandQueue);   // Iniciar la tarea del botón (le pasa la misma cola)
 }
 
 void loop() {
