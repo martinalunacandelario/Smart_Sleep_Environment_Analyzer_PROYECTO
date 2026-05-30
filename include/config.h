@@ -46,4 +46,17 @@
 #define LIGHT_GOOD_MAX    5.0     // <5   → Verde
 #define LIGHT_ACCEPTABLE_MAX 20.0 // 5–20 → Amarillo; >20 → Rojo
 
+// ============================================================
+// CONFIGURACIÓN DE LA TAREA DE DISPLAY (OLED SH1106)
+// ============================================================
+#define DISPLAY_INTERVAL_MS     1000     // Actualizar pantalla cada 1 segundo
+#define DISPLAY_TASK_PRIORITY   2        // Prioridad media (2)
+#define DISPLAY_TASK_STACK      4096     // Tamaño de pila (bytes)
+
+// Duración de la pantalla encendida después de finalizar sesión (ms)
+#define DISPLAY_POST_SESSION_DURATION_MS  60000   // 1 minuto
+
+// Dirección I2C de la OLED (normalmente 0x3C para SH1106)
+#define OLED_I2C_ADDR           0x3C
+
 #endif // CONFIG_H

@@ -1,23 +1,34 @@
-#include <Arduino.h>                     // Incluye la librería estándar de Arduino (Serial, delay, etc.)
-#include "tasks/SensorTask.h"           // Incluye la cabecera de la tarea de sensores (SensorData, SensorTask)
+#include <Arduino.h>
+#include "tasks/SensorTask.h"
+#include "tasks/DisplayTask.h"
 
-QueueHandle_t sensorDataQueue = nullptr; // Cola de FreeRTOS para pasar datos de sensores (inicialmente nula)
+QueueHandle_t sensorDataQueue = nullptr;
+QueueHandle_t displayCommandQueue = nullptr;
 
-void setup() {                          // Función de configuración (se ejecuta una vez al inicio)
-    Serial.begin(115200);               // Inicia la comunicación serie a 115200 baudios
-    delay(2000);                        // Espera 2 segundos para que el monitor serie se estabilice
-    Serial.println("\n=== Smart Sleep Environment Analyzer ==="); // Imprime mensaje de inicio
+void setup() {
+    Serial.begin(115200);
+    delay(2000);
+    Serial.println("\n=== Smart Sleep Environment Analyzer ===");
 
-    // Crea una cola con capacidad para 10 elementos de tipo SensorData
+    // Cola para datos de sensores (10 elementos)
     sensorDataQueue = xQueueCreate(10, sizeof(SensorData));
-    if (sensorDataQueue == nullptr) {   // Si no se pudo crear la cola (error)
-        Serial.println("Error al crear la cola de sensores"); // Mensaje de error
-        while(1);                       // Bucle infinito (detiene la ejecución)
+    if (sensorDataQueue == nullptr) {
+        Serial.println("Error al crear la cola de sensores");
+        while(1);
     }
 
-    SensorTask::start(sensorDataQueue); // Inicia la tarea de sensores, pasándole la cola
-}   // Fin de setup
+    // Cola para comandos de display (inicio/fin sesión)
+    displayCommandQueue = xQueueCreate(5, sizeof(DisplayCommand));
+    if (displayCommandQueue == nullptr) {
+        Serial.println("Error al crear la cola de comandos de display");
+        while(1);
+    }
 
-void loop() {                           // Función principal (se ejecuta repetidamente)
-    vTaskDelay(pdMS_TO_TICKS(1000));   // Retrasa esta tarea (el loop principal) durante 1 segundo (libera CPU)
-}   // Fin de loop
+    // Iniciar tareas
+    SensorTask::start(sensorDataQueue);
+    DisplayTask::start(sensorDataQueue, displayCommandQueue);
+}
+
+void loop() {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+}
