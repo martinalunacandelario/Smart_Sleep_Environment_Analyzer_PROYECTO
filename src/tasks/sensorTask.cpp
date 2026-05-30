@@ -1,298 +1,93 @@
-// ============================================================================
-// SensorTask.cpp - Implementación de la tarea de sensores
-// ============================================================================
+#include "SensorTask.h"                      // Incluye la cabecera de la propia tarea (SensorTask.h)
+#include "../../lib/drivers/SCD41.h"         // Incluye el driver SCD41 desde lib/drivers/
+#include "../../lib/drivers/BH1750.h"        // Incluye el driver BH1750 desde lib/drivers/
+#include "../../include/config.h"            // Incluye la configuración global (pines, intervalos, etc.)
 
-#include "SensorTask.h"
+// Variables estáticas de la clase
+TaskHandle_t SensorTask::_taskHandle = nullptr;   // Inicializa el manejador de la tarea FreeRTOS a nulo
+QueueHandle_t SensorTask::_sensorQueue = nullptr; // Inicializa la cola de datos a nulo
 
-// ============================================================================
-// DEFINICIÓN DE CONSTANTES
-// ============================================================================
+// Objetos driver estáticos (usando los constructores con dirección y bus I2C)
+static SCD41 scd41(SCD41_ADDR, &Wire);     // Crea objeto scd41 con dirección 0x62 y usa el bus Wire por defecto
+static BH1750 bh1750(BH1750_ADDR, &Wire);  // Crea objeto bh1750 con dirección 0x23 y usa el bus Wire
+static TwoWire i2c = TwoWire(0);            // Crea un objeto I2C en el puerto 0 (no se usa realmente, solo reservado)
 
-// Pines I2C
-#define I2C_SDA 21
-#define I2C_SCL 22
+void SensorTask::start(QueueHandle_t outputQueue) {   // Método estático para iniciar la tarea, recibe una cola
+    _sensorQueue = outputQueue;              // Guarda la cola recibida en la variable estática _sensorQueue
 
-// Direcciones I2C
-#define SCD41_ADDR 0x62    // Sensor CO2, temperatura, humedad
-#define BH1750_ADDR 0x23   // Sensor de luz
+    // Inicializar el bus I2C (aunque Wire.begin se llama dentro de los drivers, lo hacemos aquí por seguridad)
+    Wire.begin(I2C_SDA, I2C_SCL);            // Inicia el bus I2C con los pines I2C_SDA e I2C_SCL definidos en config.h
+    Wire.setClock(100000);                   // Configura la frecuencia del bus I2C a 100 kHz
 
-// Umbrales para determinar estado ambiental
-#define CO2_OPTIMAL 900
-#define CO2_ACCEPTABLE 1400
-#define CO2_CRITICAL 1800
+    // Inicializar SCD41
+    if (!scd41.begin()) {                    // Llama a begin() del driver SCD41; si devuelve false (error)
+        Serial.println("[Sensor] Error al iniciar SCD41"); // Imprime mensaje de error
+    } else {                                 // Si devuelve true (éxito)
+        Serial.println("[Sensor] SCD41 OK"); // Imprime confirmación
+    }
 
-#define TEMP_MIN_OPTIMAL 18.0
-#define TEMP_MAX_OPTIMAL 22.0
-#define TEMP_MAX_ACCEPTABLE 25.0
-#define TEMP_CRITICAL 28.0
+    // Inicializar BH1750
+    if (!bh1750.begin()) {                   // Llama a begin() del driver BH1750; si devuelve false (error)
+        Serial.println("[Sensor] Error al iniciar BH1750"); // Imprime mensaje de error
+    } else {                                 // Si devuelve true (éxito)
+        Serial.println("[Sensor] BH1750 OK"); // Imprime confirmación
+    }
 
-#define HUM_MIN_OPTIMAL 40.0
-#define HUM_MAX_OPTIMAL 60.0
-#define HUM_MIN_ACCEPTABLE 30.0
-#define HUM_MAX_ACCEPTABLE 70.0
-
-#define LIGHT_OPTIMAL 5.0
-#define LIGHT_ACCEPTABLE 20.0
-#define LIGHT_CRITICAL 50.0
-
-// Intervalo de lectura (milisegundos)
-#define SENSOR_INTERVAL_MS 5000
-
-// Prioridad de la tarea
-#define SENSOR_TASK_PRIORITY 4
-
-// Tamaño de la pila
-#define SENSOR_TASK_STACK 4096
-
-// ============================================================================
-// INICIALIZACIÓN DE MIEMBROS ESTÁTICOS
-// ============================================================================
-
-TaskHandle_t SensorTask::_taskHandle = nullptr;
-QueueHandle_t SensorTask::_sensorQueue = nullptr;
-TwoWire SensorTask::_i2c = TwoWire(0);
-
-// ============================================================================
-// start() - Punto de entrada público para iniciar la tarea
-// ============================================================================
-
-void SensorTask::start(QueueHandle_t outputQueue) {
-    // Guardar la cola
-    _sensorQueue = outputQueue;
-    
-    // Inicializar bus I2C
-    _i2c.begin(I2C_SDA, I2C_SCL);
-    _i2c.setClock(100000);
-    
-    // Inicializar sensores
-    initSCD41();
-    initBH1750();
-    
-    // Crear la tarea FreeRTOS en el Core 0
-    xTaskCreatePinnedToCore(
-        taskFunction,           // Función de la tarea
-        "SensorTask",           // Nombre
-        SENSOR_TASK_STACK,      // Stack size
-        nullptr,                // Parámetros
-        SENSOR_TASK_PRIORITY,   // Prioridad
-        &_taskHandle,           // Manejador
-        0                       // Core 0
+    // Crear la tarea FreeRTOS en el núcleo 0
+    xTaskCreatePinnedToCore(                 // Función de FreeRTOS para crear una tarea fijada a un núcleo
+        taskFunction,                        // Función que ejecutará la tarea (el bucle infinito)
+        "SensorTask",                        // Nombre descriptivo de la tarea
+        SENSOR_TASK_STACK,                   // Tamaño de la pila (definido en config.h)
+        nullptr,                             // Parámetro adicional (ninguno)
+        SENSOR_TASK_PRIORITY,                // Prioridad de la tarea (definido en config.h)
+        &_taskHandle,                        // Puntero para recibir el manejador de la tarea
+        0                                    // Núcleo 0 (el núcleo 1 se usa para WiFi/Bluetooth)
     );
 }
 
-// ============================================================================
-// getDataQueue() - Devuelve la cola de datos
-// ============================================================================
-
-QueueHandle_t SensorTask::getDataQueue() {
-    return _sensorQueue;
+QueueHandle_t SensorTask::getDataQueue() {   // Método estático para obtener la cola de datos
+    return _sensorQueue;                     // Devuelve la cola donde se publican los datos
 }
 
-// ============================================================================
-// taskFunction() - Bucle principal de la tarea
-// ============================================================================
+void SensorTask::taskFunction(void* pvParams) {   // Función principal de la tarea (se ejecuta en su propio hilo)
+    TickType_t lastWakeTime = xTaskGetTickCount(); // Obtiene el tiempo actual del sistema (en ticks)
+    SensorData data;                               // Variable local para almacenar una lectura
 
-void SensorTask::taskFunction(void* pvParams) {
-    TickType_t lastWakeTime = xTaskGetTickCount();
-    SensorData reading;
-    
-    while (true) {
-        // 1. Leer todos los sensores
-        readSensors(reading);
-        
-        // 2. Añadir timestamp
-        reading.timestamp = millis();
-        reading.valid = true;
-        
-        // 3. Enviar datos a la cola
-        xQueueSend(_sensorQueue, &reading, 0);
-        
-        // 4. Debug por Serial
-        Serial.printf("[Sensor] CO2:%.0f T:%.1f H:%.0f L:%.0f Estado:%d\n",
-                      reading.co2, reading.temperature, reading.humidity, 
-                      reading.light, reading.state);
-        
-        // 5. Esperar 5 segundos
-        vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(SENSOR_INTERVAL_MS));
+    while (true) {                                 // Bucle infinito de la tarea
+        if (readSensors(data)) {                   // Intenta leer todos los sensores; si tiene éxito:
+            data.timestamp = millis();             // Añade la marca de tiempo actual (ms desde inicio)
+            xQueueSend(_sensorQueue, &data, 0);    // Envía los datos a la cola (sin espera)
+            Serial.printf("[Sensor] CO2:%.0f ppm T:%.1f°C H:%.1f%% Luz:%.0f lux\n",
+                          data.co2, data.temperature, data.humidity, data.light); // Imprime datos
+        } else {                                   // Si falló la lectura de algún sensor
+            Serial.println("[Sensor] Error al leer algún sensor"); // Mensaje de error
+        }
+        vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(SENSOR_INTERVAL_MS)); // Espera hasta el siguiente ciclo
     }
 }
 
-// ============================================================================
-// initSCD41() - Inicializa el sensor SCD41
-// ============================================================================
-
-void SensorTask::initSCD41() {
-    // Comando: start periodic measurement (0x21B1)
-    _i2c.beginTransmission(SCD41_ADDR);
-    _i2c.write(0x21);
-    _i2c.write(0xB1);
-    _i2c.endTransmission();
-    delay(100);
-}
-
-// ============================================================================
-// initBH1750() - Inicializa el sensor BH1750
-// ============================================================================
-
-void SensorTask::initBH1750() {
-    // Comando: Power On (0x01)
-    _i2c.beginTransmission(BH1750_ADDR);
-    _i2c.write(0x01);
-    _i2c.endTransmission();
-    delay(10);
-    
-    // Comando: Continuos H-resolution mode (0x10)
-    _i2c.beginTransmission(BH1750_ADDR);
-    _i2c.write(0x10);
-    _i2c.endTransmission();
-    delay(10);
-}
-
-// ============================================================================
-// readSensors() - Lee todos los sensores
-// ============================================================================
-
-void SensorTask::readSensors(SensorData& data) {
-    data.co2 = readCO2();
-    data.temperature = readTemperature();
-    data.humidity = readHumidity();
-    data.light = readLight();
-    data.state = calculateState(data);
-}
-
-// ============================================================================
-// readCO2() - Lee el valor de CO2 del SCD41
-// ============================================================================
-
-float SensorTask::readCO2() {
-    // Comando: read measurement (0xEC05)
-    _i2c.beginTransmission(SCD41_ADDR);
-    _i2c.write(0xEC);
-    _i2c.write(0x05);
-    _i2c.endTransmission();
-    delay(50);
-    
-    // Solicitar 3 bytes (CO2 high, CO2 low, CRC)
-    _i2c.requestFrom(SCD41_ADDR, 3);
-    if (_i2c.available() < 3) return -1;
-    
-    uint8_t high = _i2c.read();
-    uint8_t low = _i2c.read();
-    _i2c.read();  // Descartar CRC
-    
-    uint16_t raw = (high << 8) | low;
-    return (float)raw;
-}
-
-// ============================================================================
-// readTemperature() - Lee la temperatura del SCD41
-// ============================================================================
-
-float SensorTask::readTemperature() {
-    // Comando: read measurement
-    _i2c.beginTransmission(SCD41_ADDR);
-    _i2c.write(0xEC);
-    _i2c.write(0x05);
-    _i2c.endTransmission();
-    delay(50);
-    
-    // Solicitar 6 bytes (CO2:3, Temp:3)
-    _i2c.requestFrom(SCD41_ADDR, 6);
-    if (_i2c.available() < 6) return -1;
-    
-    // Saltar CO2 (3 bytes)
-    _i2c.read(); _i2c.read(); _i2c.read();
-    
-    // Leer temperatura
-    uint8_t high = _i2c.read();
-    uint8_t low = _i2c.read();
-    
-    uint16_t raw = (high << 8) | low;
-    // Fórmula: -45 + 175 * (raw / 65535)
-    return -45.0f + 175.0f * raw / 65535.0f;
-}
-
-// ============================================================================
-// readHumidity() - Lee la humedad del SCD41
-// ============================================================================
-
-float SensorTask::readHumidity() {
-    // Comando: read measurement
-    _i2c.beginTransmission(SCD41_ADDR);
-    _i2c.write(0xEC);
-    _i2c.write(0x05);
-    _i2c.endTransmission();
-    delay(50);
-    
-    // Solicitar 9 bytes (CO2:3, Temp:3, Hum:3)
-    _i2c.requestFrom(SCD41_ADDR, 9);
-    if (_i2c.available() < 9) return -1;
-    
-    // Saltar CO2 (3) y Temperatura (3)
-    for (int i = 0; i < 6; i++) _i2c.read();
-    
-    // Leer humedad
-    uint8_t high = _i2c.read();
-    uint8_t low = _i2c.read();
-    
-    uint16_t raw = (high << 8) | low;
-    // Fórmula: 100 * (raw / 65535)
-    return 100.0f * raw / 65535.0f;
-}
-
-// ============================================================================
-// readLight() - Lee la intensidad lumínica del BH1750
-// ============================================================================
-
-float SensorTask::readLight() {
-    // Solicitar 2 bytes del BH1750
-    _i2c.requestFrom(BH1750_ADDR, 2);
-    if (_i2c.available() < 2) return -1;
-    
-    uint8_t high = _i2c.read();
-    uint8_t low = _i2c.read();
-    
-    uint16_t raw = (high << 8) | low;
-    // Fórmula: raw / 1.2
-    return raw / 1.2f;
-}
-
-// ============================================================================
-// calculateState() - Determina el estado ambiental
-// ============================================================================
-// Retorna:
-//   0 = OPTIMO   - Todas las variables en rango óptimo
-//   1 = REGULAR  - Alguna variable en rango regular
-//   2 = CRITICO  - Alguna variable fuera de rango aceptable
-// ============================================================================
-
-int SensorTask::calculateState(SensorData& data) {
-    // Verificar condiciones CRÍTICAS
-    if (data.co2 > CO2_CRITICAL || 
-        data.temperature > TEMP_CRITICAL || 
-        data.light > LIGHT_CRITICAL) {
-        return 2;
+bool SensorTask::readSensors(SensorData &data) {   // Lee todos los sensores y rellena la estructura SensorData
+    bool ok = true;                                // Variable que indica si todas las lecturas fueron correctas
+    uint16_t co2_raw;                              // Variable para el valor crudo de CO2 (ppm)
+    float temp;                                    // Variable para la temperatura (°C)
+    float hum;                                     // Variable para la humedad (%)
+    if (scd41.readMeasurement(co2_raw, temp, hum)) { // Si la lectura del SCD41 es exitosa
+        data.co2 = co2_raw;                        // Almacena el CO2 en la estructura
+        data.temperature = temp;                   // Almacena la temperatura
+        data.humidity = hum;                       // Almacena la humedad
+    } else {                                       // Si falla la lectura del SCD41
+        data.co2 = -1;                             // Asigna valor de error
+        data.temperature = -999;                   // Asigna valor de error
+        data.humidity = -1;                        // Asigna valor de error
+        ok = false;                                // Marca que hubo error
     }
-    
-    // Verificar condiciones REGULARES (aceptables pero no óptimas)
-    if (data.co2 > CO2_ACCEPTABLE || 
-        data.temperature > TEMP_MAX_ACCEPTABLE ||
-        data.humidity < HUM_MIN_ACCEPTABLE || 
-        data.humidity > HUM_MAX_ACCEPTABLE ||
-        data.light > LIGHT_ACCEPTABLE) {
-        return 1;
+
+    float lux = bh1750.readLight();                // Lee la iluminación del BH1750 (lux)
+    if (lux >= 0) {                                // Si la lectura es válida (>=0)
+        data.light = lux;                          // Almacena el valor de lux
+    } else {                                       // Si la lectura falla (devuelve -1)
+        data.light = -1;                           // Asigna valor de error
+        ok = false;                                // Marca que hubo error
     }
-    
-    // Verificar condiciones REGULARES (cerca del límite)
-    if (data.co2 > CO2_OPTIMAL ||
-        data.temperature < TEMP_MIN_OPTIMAL || 
-        data.temperature > TEMP_MAX_OPTIMAL ||
-        data.humidity < HUM_MIN_OPTIMAL || 
-        data.humidity > HUM_MAX_OPTIMAL ||
-        data.light > LIGHT_OPTIMAL) {
-        return 1;
-    }
-    
-    // Si no se cumplió ninguna, es ÓPTIMO
-    return 0;
+    return ok;                                     // Devuelve true si todas las lecturas fueron correctas
 }
