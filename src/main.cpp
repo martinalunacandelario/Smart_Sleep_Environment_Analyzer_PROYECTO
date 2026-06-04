@@ -4,6 +4,7 @@
 #include "tasks/ButtonTask.h"
 #include "tasks/AlertTask.h"
 #include "tasks/StorageTask.h"
+#include "tasks/AnalysisTask.h"
 #include "tasks/WebServerTask.h"
 #include "SessionManager.h"
 
@@ -16,13 +17,12 @@ QueueHandle_t sensorQueueForStorage = nullptr;  // SensorTask → StorageTask
 
 // ============================================================================
 // COLAS DE COMANDOS DE SESIÓN (una por consumidor, gestionadas por SessionManager)
-// SessionManager es la única fuente que escribe en estas colas.
-// Tanto el botón físico como la web usan SessionManager, nunca las colas directamente.
 // ============================================================================
 QueueHandle_t sessionQueueDisplay  = nullptr;  // SessionManager → DisplayTask
 QueueHandle_t sessionQueueSensor   = nullptr;  // SessionManager → SensorTask
 QueueHandle_t sessionQueueStorage  = nullptr;  // SessionManager → StorageTask
 QueueHandle_t sessionQueueAlert    = nullptr;  // SessionManager → AlertTask
+QueueHandle_t sessionQueueAnalysis = nullptr;  // SessionManager → AnalysisTask (NUEVA)
 
 // ============================================================================
 // COLA DE RECOMENDACIONES
@@ -78,6 +78,12 @@ void setup() {
         Serial.println("Error al crear sessionQueueAlert"); while(1);
     }
 
+    // NUEVA: Cola exclusiva para AnalysisTask
+    sessionQueueAnalysis = xQueueCreate(5, sizeof(SessionCommand));
+    if (sessionQueueAnalysis == nullptr) {
+        Serial.println("Error al crear sessionQueueAnalysis"); while(1);
+    }
+
     recommendationQueue = xQueueCreate(5, sizeof(Recommendation));
     if (recommendationQueue == nullptr) {
         Serial.println("Error al crear recommendationQueue"); while(1);
@@ -85,13 +91,13 @@ void setup() {
 
     // ========================================================================
     // SUSCRIBIR COLAS AL SESSION MANAGER
-    // Al llamar startSession() o stopSession() desde cualquier sitio,
-    // SessionManager notifica automáticamente a todas estas colas
+    // SessionManager notifica a todas estas colas cuando cambia la sesión
     // ========================================================================
     SessionManager::subscribe(sessionQueueDisplay);
     SessionManager::subscribe(sessionQueueSensor);
     SessionManager::subscribe(sessionQueueStorage);
     SessionManager::subscribe(sessionQueueAlert);
+    SessionManager::subscribe(sessionQueueAnalysis);  // NUEVA
 
     // ========================================================================
     // INICIO DE TAREAS
@@ -104,7 +110,7 @@ void setup() {
     // DisplayTask: recibe datos de sensores, comandos de sesión y recomendaciones
     DisplayTask::start(sensorQueueForDisplay, sessionQueueDisplay, recommendationQueue);
 
-    // ButtonTask: ya no gestiona colas directamente, delega en SessionManager
+    // ButtonTask: delega en SessionManager
     ButtonTask::start();
 
     // AlertTask: controla LED RGB y buzzer, escucha su cola de sesión
@@ -114,7 +120,10 @@ void setup() {
     // StorageTask: guarda en SD, escucha su cola de sesión
     StorageTask::start(sensorQueueForStorage, sessionQueueStorage);
 
-    // WebServerTask: ya no necesita cola, usa SessionManager directamente
+    // AnalysisTask: genera estadísticas JSON al finalizar sesión
+    AnalysisTask::start(sessionQueueAnalysis, StorageTask::getSessionCounterPtr());
+
+    // WebServerTask: servidor web
     WebServerTask::start();
 }
 

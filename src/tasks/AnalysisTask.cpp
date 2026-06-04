@@ -90,7 +90,7 @@ void AnalysisTask::taskFunction(void* pvParams) {
 }
 
 // ============================================================================
-// getLastSessionFileName() - Obtiene el nombre del archivo CSV de la última sesión
+// getLastSessionFileName() - Obtiene la RUTA COMPLETA del archivo CSV de la última sesión
 // ============================================================================
 String AnalysisTask::getLastSessionFileName() {
     if (_sessionCounter == nullptr) return "";
@@ -102,13 +102,15 @@ String AnalysisTask::getLastSessionFileName() {
     String targetFile = "";
     
     while (file) {
-        String name = file.name();
+        String name = String(file.name());
+        file.close();
+        
         char searchPattern[32];
         snprintf(searchPattern, sizeof(searchPattern), "session_%03lu", *_sessionCounter);
         
         if (name.indexOf(searchPattern) >= 0 && name.endsWith(".csv")) {
-            targetFile = name;
-            file.close();
+            // Devolver la RUTA COMPLETA, no solo el nombre
+            targetFile = String(SD_BASE_PATH) + "/" + name;
             break;
         }
         file = root.openNextFile();

@@ -672,7 +672,6 @@ void WebServerTask::handleApiSession() {
 }
 
 void WebServerTask::handleApiSessions() {
-    // Usar Dynamic para evitar un desbordamiento de pila en memoria local
     DynamicJsonDocument doc(8192);
     JsonArray sessions = doc.to<JsonArray>();
 
@@ -687,25 +686,31 @@ void WebServerTask::handleApiSessions() {
         String name = String(file.name());
         file.close();
 
-        // Limpiar el path completo si la librería SD lo devuelve
         int slashIdx = name.lastIndexOf('/');
         if (slashIdx >= 0) name = name.substring(slashIdx + 1);
 
         if (name.endsWith("_stats.json")) {
-            String fullPath = String(SD_BASE_PATH) + "/" + name;
-            File sf = SD.open(fullPath.c_str(), FILE_READ);
-            if (sf) {
-                DynamicJsonDocument sd(1024);
-                DeserializationError e = deserializeJson(sd, sf);
-                sf.close();
-                if (!e) {
-                    JsonObject s = sessions.createNestedObject();
-                    s["id"]         = sd["sessionId"]   | 0;
-                    s["sleepScore"] = sd["sleepScore"]  | 0;
-                    s["duration"]   = sd["duration"]    | 0;
-                    s["date"]       = sd["date"]        | "";
-                    s["startTime"]  = sd["startTime"]   | "";
-                    s["endTime"]    = sd["endTime"]     | "";
+            int firstUnderscore = name.indexOf('_');
+            int secondUnderscore = name.indexOf('_', firstUnderscore + 1);
+            if (firstUnderscore >= 0 && secondUnderscore > firstUnderscore) {
+                String idStr = name.substring(firstUnderscore + 1, secondUnderscore);
+                int sessionId = idStr.toInt();
+                
+                String fullPath = String(SD_BASE_PATH) + "/" + name;
+                File sf = SD.open(fullPath.c_str(), FILE_READ);
+                if (sf) {
+                    DynamicJsonDocument sd(1024);
+                    DeserializationError e = deserializeJson(sd, sf);
+                    sf.close();
+                    if (!e) {
+                        JsonObject s = sessions.createNestedObject();
+                        s["id"]         = sessionId;
+                        s["sleepScore"] = sd["sleepScore"]  | 0;
+                        s["duration"]   = sd["duration"]    | 0;
+                        s["date"]       = sd["date"]        | "";
+                        s["startTime"]  = sd["startTime"]   | "";
+                        s["endTime"]    = sd["endTime"]     | "";
+                    }
                 }
             }
         }
@@ -726,8 +731,6 @@ void WebServerTask::handleApiSessionStats() {
 
     int idNum = server.arg("id").toInt();
     char path[80];
-    
-    // Corregido: Añadido %03d para que lea session_001_stats.json en lugar de session_1_stats.json
     snprintf(path, sizeof(path), "%s/session_%03d_stats.json", SD_BASE_PATH, idNum);
 
     File f = SD.open(path, FILE_READ);
@@ -748,13 +751,10 @@ void WebServerTask::handleApiSessionAlerts() {
 
     int idNum = server.arg("id").toInt();
     char path[80];
-    
-    // Corregido: Añadido %03d
     snprintf(path, sizeof(path), "%s/session_%03d_alerts.json", SD_BASE_PATH, idNum);
 
     File f = SD.open(path, FILE_READ);
     if (!f) {
-        // Estructura vacía en vez de dar error 404
         char emptyResp[64];
         snprintf(emptyResp, sizeof(emptyResp), "{\"sessionId\":%d,\"alerts\":[]}", idNum);
         server.send(200, "application/json", emptyResp);
@@ -773,7 +773,6 @@ void WebServerTask::handleApiSessionData() {
 
     int idNum = server.arg("id").toInt();
     char prefixStr[32];
-    // Corregido: Buscar session_001_ porque el CSV añade la fecha/hora en su nombre
     snprintf(prefixStr, sizeof(prefixStr), "session_%03d_", idNum);
     String prefix = String(prefixStr);
 
@@ -808,7 +807,6 @@ void WebServerTask::handleApiSessionData() {
         return;
     }
 
-    // Corregido: DynamicJsonDocument (heap) en lugar de StaticJsonDocument (stack crash)
     DynamicJsonDocument doc(32768);
     JsonArray timestamps = doc.createNestedArray("timestamps");
     JsonArray co2Arr     = doc.createNestedArray("co2");
@@ -852,6 +850,5 @@ void WebServerTask::handleNotFound() {
 }
 
 void WebServerTask::handleRoot() {
-    // Servir directamente desde PROGMEM (memoria flash)
     server.send_P(200, "text/html", INDEX_HTML);
 }
