@@ -18,16 +18,19 @@ TaskHandle_t  ButtonTask::_taskHandle      = nullptr;
 QueueHandle_t ButtonTask::_cmdQueueDisplay = nullptr;  // Cola para DisplayTask
 QueueHandle_t ButtonTask::_cmdQueueSensor  = nullptr;  // Cola para SensorTask
 QueueHandle_t ButtonTask::_cmdQueueStorage = nullptr;  // Cola para StorageTask
+QueueHandle_t ButtonTask::_cmdQueueAlert   = nullptr;  // Cola para AlertTask
 
 // ============================================================================
 // start() - Inicializa el botón y crea la tarea
 // ============================================================================
 void ButtonTask::start(QueueHandle_t cmdQueueDisplay,
                        QueueHandle_t cmdQueueSensor,
-                       QueueHandle_t cmdQueueStorage) {
+                       QueueHandle_t cmdQueueStorage,
+                       QueueHandle_t cmdQueueAlert) {
     _cmdQueueDisplay = cmdQueueDisplay;  // Guardar cola de Display
     _cmdQueueSensor  = cmdQueueSensor;   // Guardar cola de Sensor
     _cmdQueueStorage = cmdQueueStorage;  // Guardar cola de Storage
+    _cmdQueueAlert   = cmdQueueAlert;    // Guardar cola de Alert
 
     // Configurar el pin del botón como entrada con pull-up interna
     // (LOW = presionado, HIGH = soltado)
@@ -46,7 +49,7 @@ void ButtonTask::start(QueueHandle_t cmdQueueDisplay,
 }
 
 // ============================================================================
-// taskFunction() - Detecta pulsaciones y publica el comando en las TRES colas
+// taskFunction() - Detecta pulsaciones y publica el comando en las CUATRO colas
 // ============================================================================
 void ButtonTask::taskFunction(void* pvParams) {
     int lastButtonState   = HIGH;  // Último estado leído del botón
@@ -77,10 +80,11 @@ void ButtonTask::taskFunction(void* pvParams) {
                     DisplayCommand cmd;
                     cmd.sessionActive = sessionActive;
 
-                    // Publicar en las TRES colas para que cada tarea reciba su copia
+                    // Publicar en las CUATRO colas para que cada tarea reciba su copia
                     xQueueSend(_cmdQueueDisplay, &cmd, 0);  // Para DisplayTask
                     xQueueSend(_cmdQueueSensor,  &cmd, 0);  // Para SensorTask
                     xQueueSend(_cmdQueueStorage, &cmd, 0);  // Para StorageTask
+                    xQueueSend(_cmdQueueAlert,   &cmd, 0);  // Para AlertTask
 
                     Serial.printf("[Button] Sesion %s\n",
                                   sessionActive ? "INICIADA" : "FINALIZADA");

@@ -15,11 +15,12 @@ QueueHandle_t sensorQueueForStorage = nullptr;  // SensorTask → StorageTask
 // ============================================================================
 // COLAS DE COMANDOS (una por consumidor — nunca compartir entre tareas)
 // ============================================================================
-QueueHandle_t displayCommandQueue   = nullptr;  // ButtonTask → DisplayTask
-QueueHandle_t sensorCommandQueue    = nullptr;  // ButtonTask → SensorTask
-QueueHandle_t storageCommandQueue   = nullptr;  // ButtonTask → StorageTask  ← NUEVA
+QueueHandle_t displayCommandQueue  = nullptr;  // ButtonTask → DisplayTask
+QueueHandle_t sensorCommandQueue   = nullptr;  // ButtonTask → SensorTask
+QueueHandle_t storageCommandQueue  = nullptr;  // ButtonTask → StorageTask
+QueueHandle_t alertCommandQueue    = nullptr;  // ButtonTask → AlertTask  ← NUEVA
 
-QueueHandle_t recommendationQueue   = nullptr;  // AlertTask → DisplayTask
+QueueHandle_t recommendationQueue  = nullptr;  // AlertTask → DisplayTask
 
 void setup() {
     Serial.begin(115200);
@@ -62,10 +63,16 @@ void setup() {
         while(1);
     }
 
-    // Cola de comandos exclusiva para StorageTask (fix: antes compartía con DisplayTask)
     storageCommandQueue = xQueueCreate(5, sizeof(DisplayCommand));
     if (storageCommandQueue == nullptr) {
         Serial.println("Error al crear storageCommandQueue");
+        while(1);
+    }
+
+    // Cola de comandos exclusiva para AlertTask
+    alertCommandQueue = xQueueCreate(5, sizeof(DisplayCommand));
+    if (alertCommandQueue == nullptr) {
+        Serial.println("Error al crear alertCommandQueue");
         while(1);
     }
 
@@ -79,19 +86,23 @@ void setup() {
     // INICIO DE TAREAS
     // ========================================================================
 
-    // SensorTask: publica en 3 colas de datos y escucha su propia cola de comandos
-    SensorTask::start(sensorQueueForDisplay, sensorQueueForAlert, sensorQueueForStorage, sensorCommandQueue);
+    // SensorTask: publica en 3 colas de datos y escucha su cola de comandos
+    SensorTask::start(sensorQueueForDisplay, sensorQueueForAlert,
+                      sensorQueueForStorage, sensorCommandQueue);
 
     // DisplayTask: recibe datos, comandos de sesión y recomendaciones
     DisplayTask::start(sensorQueueForDisplay, displayCommandQueue, recommendationQueue);
 
-    // ButtonTask: publica comandos en 3 colas separadas (Display, Sensor, Storage)
-    ButtonTask::start(displayCommandQueue, sensorCommandQueue, storageCommandQueue);
+    // ButtonTask: publica comandos en 4 colas separadas (Display, Sensor, Storage, Alert)
+    ButtonTask::start(displayCommandQueue, sensorCommandQueue,
+                      storageCommandQueue, alertCommandQueue);
 
     // AlertTask: controla LED RGB y buzzer, genera recomendaciones
-    AlertTask::start(sensorQueueForAlert, recommendationQueue, StorageTask::getSessionCounterPtr());
+    // Ahora recibe su propia cola de comandos de sesión
+    AlertTask::start(sensorQueueForAlert, recommendationQueue,
+                     StorageTask::getSessionCounterPtr(), alertCommandQueue);
 
-    // StorageTask: guarda en SD y ahora escucha su propia cola de comandos
+    // StorageTask: guarda en SD y escucha su propia cola de comandos
     StorageTask::start(sensorQueueForStorage, storageCommandQueue);
 }
 
