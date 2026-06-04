@@ -260,3 +260,16 @@ void StorageTask::taskFunction(void* pvParams) {
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
+
+// ============================================================================
+// getSessionCounterPtr() - Devuelve puntero al contador de sesiones
+// ============================================================================
+// Esta función permite que otras tareas (AlertTask, AnalysisTask) accedan al
+// mismo contador de sesiones y así nombrar sus archivos con el mismo número:
+//   - StorageTask: session_001.csv
+//   - AlertTask:   session_001_alerts.json
+//   - AnalysisTask: session_001_stats.json
+// ============================================================================
+unsigned long* StorageTask::getSessionCounterPtr() {
+    return &_sessionCounter;
+}

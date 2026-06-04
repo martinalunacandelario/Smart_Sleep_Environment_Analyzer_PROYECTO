@@ -17,13 +17,17 @@
 TaskHandle_t  ButtonTask::_taskHandle      = nullptr;
 QueueHandle_t ButtonTask::_cmdQueueDisplay = nullptr;  // Cola para DisplayTask
 QueueHandle_t ButtonTask::_cmdQueueSensor  = nullptr;  // Cola para SensorTask
+QueueHandle_t ButtonTask::_cmdQueueStorage = nullptr;  // Cola para StorageTask
 
 // ============================================================================
 // start() - Inicializa el botón y crea la tarea
 // ============================================================================
-void ButtonTask::start(QueueHandle_t cmdQueueDisplay, QueueHandle_t cmdQueueSensor) {
+void ButtonTask::start(QueueHandle_t cmdQueueDisplay,
+                       QueueHandle_t cmdQueueSensor,
+                       QueueHandle_t cmdQueueStorage) {
     _cmdQueueDisplay = cmdQueueDisplay;  // Guardar cola de Display
     _cmdQueueSensor  = cmdQueueSensor;   // Guardar cola de Sensor
+    _cmdQueueStorage = cmdQueueStorage;  // Guardar cola de Storage
 
     // Configurar el pin del botón como entrada con pull-up interna
     // (LOW = presionado, HIGH = soltado)
@@ -42,12 +46,12 @@ void ButtonTask::start(QueueHandle_t cmdQueueDisplay, QueueHandle_t cmdQueueSens
 }
 
 // ============================================================================
-// taskFunction() - Detecta pulsaciones y publica el comando en AMBAS colas
+// taskFunction() - Detecta pulsaciones y publica el comando en las TRES colas
 // ============================================================================
 void ButtonTask::taskFunction(void* pvParams) {
-    int lastButtonState    = HIGH;   // Último estado leído del botón
-    int stableButtonState  = HIGH;   // Estado estable tras el antirrebote
-    unsigned long lastDebounceTime = 0;  // Momento del último cambio de estado
+    int lastButtonState   = HIGH;  // Último estado leído del botón
+    int stableButtonState = HIGH;  // Estado estable tras el antirrebote
+    unsigned long lastDebounceTime = 0;
 
     bool sessionActive = false;  // Estado de sesión local (empieza inactiva)
 
@@ -73,12 +77,13 @@ void ButtonTask::taskFunction(void* pvParams) {
                     DisplayCommand cmd;
                     cmd.sessionActive = sessionActive;
 
-                    // CLAVE: publicar en las DOS colas para que tanto DisplayTask
-                    // como SensorTask reciban el comando (cada una tiene la suya)
+                    // Publicar en las TRES colas para que cada tarea reciba su copia
                     xQueueSend(_cmdQueueDisplay, &cmd, 0);  // Para DisplayTask
                     xQueueSend(_cmdQueueSensor,  &cmd, 0);  // Para SensorTask
+                    xQueueSend(_cmdQueueStorage, &cmd, 0);  // Para StorageTask
 
-                    Serial.printf("[Button] Sesion %s\n", sessionActive ? "INICIADA" : "FINALIZADA");
+                    Serial.printf("[Button] Sesion %s\n",
+                                  sessionActive ? "INICIADA" : "FINALIZADA");
                 }
             }
         }

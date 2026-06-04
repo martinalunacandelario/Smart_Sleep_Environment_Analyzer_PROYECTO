@@ -1,31 +1,42 @@
 #include "AlertTask.h"
 #include "../../include/config.h"
+#include "DisplayTask.h"  // Para DisplayCommand (necesario para la estructura, aunque no se use)
+#include <SPI.h>
+#include <SD.h>
 
 // ============================================================================
 // INICIALIZACIÓN DE MIEMBROS ESTÁTICOS
 // ============================================================================
-TaskHandle_t  AlertTask::_taskHandle   = nullptr;
-QueueHandle_t AlertTask::_sensorQueue  = nullptr;
-QueueHandle_t AlertTask::_recQueue     = nullptr;
+TaskHandle_t AlertTask::_taskHandle = nullptr;
+QueueHandle_t AlertTask::_sensorQueue = nullptr;
+QueueHandle_t AlertTask::_recQueue = nullptr;
+unsigned long* AlertTask::_sessionCounter = nullptr;
+
+bool AlertTask::_sessionActive = false;
+unsigned long AlertTask::_sessionStartTime = 0;
+
+File AlertTask::_alertsFile;
+bool AlertTask::_alertsFileOpen = false;
 
 // ============================================================================
 // start() - Inicializa pines y crea la tarea
 // ============================================================================
-void AlertTask::start(QueueHandle_t sensorQueue, QueueHandle_t recQueue) {
-    _sensorQueue = sensorQueue;  // Cola exclusiva de sensores para AlertTask
-    _recQueue    = recQueue;     // Cola para enviar recomendaciones a DisplayTask
+void AlertTask::start(QueueHandle_t sensorQueue, QueueHandle_t recQueue, unsigned long* sessionCounter) {
+    _sensorQueue = sensorQueue;
+    _recQueue = recQueue;
+    _sessionCounter = sessionCounter;
 
     // Configurar pines del LED RGB como salida
-    pinMode(LED_RED_PIN,    OUTPUT);
-    pinMode(LED_GREEN_PIN,  OUTPUT);
+    pinMode(LED_RED_PIN, OUTPUT);
+    pinMode(LED_GREEN_PIN, OUTPUT);
     pinMode(LED_YELLOW_PIN, OUTPUT);
 
     // Configurar pin del buzzer como salida
     pinMode(BUZZER_PIN, OUTPUT);
 
     // Apagar todos los LEDs al inicio
-    digitalWrite(LED_RED_PIN,    LOW);
-    digitalWrite(LED_GREEN_PIN,  LOW);
+    digitalWrite(LED_RED_PIN, LOW);
+    digitalWrite(LED_GREEN_PIN, LOW);
     digitalWrite(LED_YELLOW_PIN, LOW);
 
     // Crear tarea FreeRTOS en el núcleo 1 (prioridad alta)
@@ -41,26 +52,108 @@ void AlertTask::start(QueueHandle_t sensorQueue, QueueHandle_t recQueue) {
 }
 
 // ============================================================================
+// getCurrentTimeString() - Devuelve la hora actual en formato HH:MM
+// ============================================================================
+String AlertTask::getCurrentTimeString() {
+    // Tiempo transcurrido desde el inicio de la sesión (segundos)
+    unsigned long elapsed = (millis() - _sessionStartTime) / 1000;
+    unsigned long horas = elapsed / 3600;           // Horas transcurridas
+    unsigned long minutos = (elapsed % 3600) / 60;  // Minutos transcurridos
+    char timeStr[10];
+    snprintf(timeStr, sizeof(timeStr), "%02lu:%02lu", horas, minutos);
+    return String(timeStr);
+}
+
+// ============================================================================
+// createAlertsFile() - Crea el archivo JSON para alertas al iniciar sesión
+// ============================================================================
+void AlertTask::createAlertsFile() {
+    if (_alertsFileOpen) return;  // Ya está abierto
+    
+    if (_sessionCounter == nullptr) return;  // No hay contador de sesiones
+    
+    char filePath[64];
+    // Formato: /sessions/session_001_alerts.json
+    snprintf(filePath, sizeof(filePath), "%s/session_%03lu_alerts.json", SD_BASE_PATH, *_sessionCounter);
+    
+    _alertsFile = SD.open(filePath, FILE_WRITE);
+    if (_alertsFile) {
+        // Escribir cabecera del JSON
+        _alertsFile.println("{");
+        _alertsFile.printf("  \"sessionId\": %lu,\n", *_sessionCounter);
+        _alertsFile.println("  \"alerts\": [");
+        _alertsFileOpen = true;
+        Serial.printf("[Alert] Archivo de alertas creado: %s\n", filePath);
+    } else {
+        Serial.println("[Alert] Error al crear archivo de alertas");
+    }
+}
+
+// ============================================================================
+// closeAlertsFile() - Cierra el archivo JSON al finalizar sesión
+// ============================================================================
+void AlertTask::closeAlertsFile() {
+    if (_alertsFileOpen && _alertsFile) {
+        // Cerrar el array de alerts y el objeto JSON
+        _alertsFile.println("\n  ]");
+        _alertsFile.println("}");
+        _alertsFile.close();
+        _alertsFileOpen = false;
+        Serial.println("[Alert] Archivo de alertas cerrado");
+    }
+}
+
+// ============================================================================
+// saveAlertToSD() - Guarda una alerta en el archivo JSON
+// ============================================================================
+void AlertTask::saveAlertToSD(const char* type, const char* message) {
+    if (!_alertsFileOpen || !_alertsFile) return;
+    
+    // Variable estática para saber si es la primera alerta (no poner coma antes)
+    static bool firstAlert = true;
+    
+    // Si no es la primera alerta, añadir coma antes del nuevo objeto
+    if (!firstAlert) {
+        _alertsFile.println(",");
+    }
+    firstAlert = false;
+    
+    // Obtener tiempo actual desde inicio de sesión
+    String timeStr = getCurrentTimeString();
+    unsigned long elapsedMs = millis() - _sessionStartTime;
+    
+    // Escribir objeto de alerta en JSON
+    _alertsFile.printf("    {\n");
+    _alertsFile.printf("      \"timestamp_ms\": %lu,\n", elapsedMs);
+    _alertsFile.printf("      \"time\": \"%s\",\n", timeStr.c_str());
+    _alertsFile.printf("      \"type\": \"%s\",\n", type);
+    _alertsFile.printf("      \"message\": \"%s\"\n", message);
+    _alertsFile.printf("    }");
+    _alertsFile.flush();  // Forzar escritura a la tarjeta
+    
+    Serial.printf("[Alert] Alerta guardada: %s - %s\n", type, message);
+}
+
+// ============================================================================
 // taskFunction() - Bucle principal
 // ============================================================================
 void AlertTask::taskFunction(void* pvParams) {
     SensorData data;
-    int lastState = -1;  // Último estado global (para detectar cambios)
 
     while (true) {
-        // Intentar recibir datos de sensores sin bloquear la tarea
-        if (xQueueReceive(_sensorQueue, &data, 0) == pdTRUE) {
-
-            // 1. Evaluar estado global (0=Verde, 1=Amarillo, 2=Rojo)
+        // Recibir datos de sensores (solo si hay sesión activa)
+        if (_sessionActive && xQueueReceive(_sensorQueue, &data, 0) == pdTRUE) {
+            // 1. Evaluar estado global
             int globalState = getGlobalState(data);
-
-            // 2. Controlar LED RGB según el estado
+            
+            // 2. Controlar LED RGB
             setLedState(globalState);
-
-            // 3. Si el estado es crítico (rojo): sonar alarma y enviar recomendación
+            
+            // 3. Si el estado es crítico (rojo)
             if (globalState == 2) {
-                playAlarm();  // Buzzer (usa vTaskDelay internamente, no bloquea el núcleo)
-
+                // Sonar alarma
+                playAlarm();
+                
                 // Generar y enviar recomendación a DisplayTask
                 const char* rec = getRecommendation(data);
                 if (rec != nullptr) {
@@ -69,48 +162,45 @@ void AlertTask::taskFunction(void* pvParams) {
                     recom.message[sizeof(recom.message) - 1] = '\0';
                     recom.duration = RECOMMENDATION_DURATION_MS;
                     xQueueSend(_recQueue, &recom, 0);
+                    
+                    // Determinar el tipo de alerta según la variable crítica
+                    const char* type = "";
+                    if (getCo2State(data.co2) == 2) type = "CO2";
+                    else if (getTempState(data.temperature) == 2) type = "Temperatura";
+                    else if (getHumState(data.humidity) == 2) type = "Humedad";
+                    else if (getLightState(data.light) == 2) type = "Iluminacion";
+                    
+                    // Guardar alerta en archivo JSON
+                    saveAlertToSD(type, rec);
                 }
-            }
-
-            // Depuración: mostrar en serie si el estado cambió
-            if (globalState != lastState) {
-                const char* estadoTexto;
-                switch (globalState) {
-                    case 0:  estadoTexto = "BUENO (Verde)";      break;
-                    case 1:  estadoTexto = "REGULAR (Amarillo)"; break;
-                    case 2:  estadoTexto = "MALO (Rojo)";        break;
-                    default: estadoTexto = "DESCONOCIDO";        break;
-                }
-                Serial.printf("[Alert] Estado cambiado a: %s\n", estadoTexto);
-                lastState = globalState;
             }
         }
-
+        
         // Pequeña pausa para no saturar la CPU
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
 // ============================================================================
-// getCo2State() - 0=bueno, 1=regular, 2=malo
+// getCo2State() - Estado del CO2 (0=bueno, 1=regular, 2=malo)
 // ============================================================================
 int AlertTask::getCo2State(float co2) {
-    if (co2 < CO2_GOOD_MAX)        return 0;
+    if (co2 < CO2_GOOD_MAX) return 0;
     if (co2 <= CO2_ACCEPTABLE_MAX) return 1;
     return 2;
 }
 
 // ============================================================================
-// getTempState()
+// getTempState() - Estado de la temperatura (0=bueno, 1=regular, 2=malo)
 // ============================================================================
 int AlertTask::getTempState(float temp) {
     if (temp >= TEMP_GOOD_MIN && temp <= TEMP_GOOD_MAX) return 0;
-    if (temp <= TEMP_ACCEPTABLE_MAX)                    return 1;
+    if (temp <= TEMP_ACCEPTABLE_MAX) return 1;
     return 2;
 }
 
 // ============================================================================
-// getHumState()
+// getHumState() - Estado de la humedad (0=bueno, 1=regular, 2=malo)
 // ============================================================================
 int AlertTask::getHumState(float hum) {
     if (hum >= HUM_GOOD_MIN && hum <= HUM_GOOD_MAX) return 0;
@@ -120,16 +210,16 @@ int AlertTask::getHumState(float hum) {
 }
 
 // ============================================================================
-// getLightState()
+// getLightState() - Estado de la iluminación (0=bueno, 1=regular, 2=malo)
 // ============================================================================
 int AlertTask::getLightState(float light) {
-    if (light < LIGHT_GOOD_MAX)       return 0;
+    if (light < LIGHT_GOOD_MAX) return 0;
     if (light < LIGHT_ACCEPTABLE_MAX) return 1;
     return 2;
 }
 
 // ============================================================================
-// getGlobalState() - Devuelve el peor estado de todas las variables
+// getGlobalState() - Estado global (el peor de todos)
 // ============================================================================
 int AlertTask::getGlobalState(SensorData &data) {
     int states[4];
@@ -137,7 +227,7 @@ int AlertTask::getGlobalState(SensorData &data) {
     states[1] = getTempState(data.temperature);
     states[2] = getHumState(data.humidity);
     states[3] = getLightState(data.light);
-
+    
     int worst = 0;
     for (int i = 0; i < 4; i++) {
         if (states[i] > worst) worst = states[i];
@@ -146,70 +236,70 @@ int AlertTask::getGlobalState(SensorData &data) {
 }
 
 // ============================================================================
-// setLedState() - 0=Verde, 1=Amarillo, 2=Rojo
+// setLedState() - Controla el LED RGB según estado
+// 0 = Verde, 1 = Amarillo, 2 = Rojo
 // ============================================================================
 void AlertTask::setLedState(int state) {
     // Apagar todos los LEDs primero
-    digitalWrite(LED_RED_PIN,    LOW);
-    digitalWrite(LED_GREEN_PIN,  LOW);
+    digitalWrite(LED_RED_PIN, LOW);
+    digitalWrite(LED_GREEN_PIN, LOW);
     digitalWrite(LED_YELLOW_PIN, LOW);
-
+    
     switch (state) {
-        case 0: digitalWrite(LED_GREEN_PIN,  HIGH); break;  // Óptimo → Verde
-        case 1: digitalWrite(LED_YELLOW_PIN, HIGH); break;  // Regular → Amarillo
-        case 2: digitalWrite(LED_RED_PIN,    HIGH); break;  // Crítico → Rojo
+        case 0:  // Óptimo → Verde
+            digitalWrite(LED_GREEN_PIN, HIGH);
+            break;
+        case 1:  // Regular → Amarillo
+            digitalWrite(LED_YELLOW_PIN, HIGH);
+            break;
+        case 2:  // Crítico → Rojo
+            digitalWrite(LED_RED_PIN, HIGH);
+            break;
     }
 }
 
 // ============================================================================
-// playAlarm() - Melodía: intro simpática ascendente + alerta urgente + cierre
-// Estructura: subida Do→Mi→Sol→Do (videojuego) → dos pares urgentes → nota final
-// Usa vTaskDelay para no bloquear otras tareas FreeRTOS del mismo núcleo
+// playAlarm() - Melodía de alarma para el buzzer (pasivo)
 // ============================================================================
 void AlertTask::playAlarm() {
-    // --- Intro ascendente (estilo videojuego) ---
-    // Sube de Do a Do una octava arriba, dando un toque simpático antes de la alerta
-    tone(BUZZER_PIN, 523);  vTaskDelay(pdMS_TO_TICKS(150));  // Do5
-    noTone(BUZZER_PIN);     vTaskDelay(pdMS_TO_TICKS(40));
-    tone(BUZZER_PIN, 659);  vTaskDelay(pdMS_TO_TICKS(150));  // Mi5
-    noTone(BUZZER_PIN);     vTaskDelay(pdMS_TO_TICKS(40));
-    tone(BUZZER_PIN, 784);  vTaskDelay(pdMS_TO_TICKS(150));  // Sol5
-    noTone(BUZZER_PIN);     vTaskDelay(pdMS_TO_TICKS(40));
-    tone(BUZZER_PIN, 1047); vTaskDelay(pdMS_TO_TICKS(300));  // Do6 (nota larga, punto de tensión)
-    noTone(BUZZER_PIN);     vTaskDelay(pdMS_TO_TICKS(150));  // Pausa antes de la alerta
-
-    // --- Alerta urgente (dos pares de pitidos cortos y agudos) ---
-    // Alterna entre dos frecuencias altas para dar sensación de urgencia
-    for (int i = 0; i < 2; i++) {
-        tone(BUZZER_PIN, 1800); vTaskDelay(pdMS_TO_TICKS(180));  // Tono agudo
-        noTone(BUZZER_PIN);     vTaskDelay(pdMS_TO_TICKS(60));
-        tone(BUZZER_PIN, 2400); vTaskDelay(pdMS_TO_TICKS(180));  // Tono más agudo
-        noTone(BUZZER_PIN);     vTaskDelay(pdMS_TO_TICKS(60));
+    // 3 pitidos rápidos de 200 ms con 100 ms de pausa
+    for (int i = 0; i < 3; i++) {
+        tone(BUZZER_PIN, 2500);  // Frecuencia 2500 Hz (aguda)
+        delay(200);
+        noTone(BUZZER_PIN);
+        delay(100);
     }
-
-    // --- Cierre: nota larga de resolución ---
-    // Baja a una frecuencia media para no acabar de forma brusca
-    vTaskDelay(pdMS_TO_TICKS(100));
-    tone(BUZZER_PIN, 880);  vTaskDelay(pdMS_TO_TICKS(400));  // La5 (nota de cierre)
-    noTone(BUZZER_PIN);
+    // Pausa más larga y repite una vez más
+    delay(300);
+    for (int i = 0; i < 3; i++) {
+        tone(BUZZER_PIN, 2500);
+        delay(200);
+        noTone(BUZZER_PIN);
+        delay(100);
+    }
 }
 
 // ============================================================================
-// getRecommendation() - Prioridad: CO2 > Temperatura > Humedad > Luz
+// getRecommendation() - Genera recomendación según la variable crítica
 // ============================================================================
 const char* AlertTask::getRecommendation(SensorData &data) {
+    // Prioridad: CO2 > Temperatura > Humedad > Luz
     if (getCo2State(data.co2) == 2) {
         return "Ventilar la habitacion";
     }
     if (getTempState(data.temperature) == 2) {
-        return (data.temperature > TEMP_ACCEPTABLE_MAX)
-            ? "Reducir temperatura"
-            : "Aumentar temperatura";
+        if (data.temperature > TEMP_ACCEPTABLE_MAX) {
+            return "Reducir temperatura";
+        } else {
+            return "Aumentar temperatura";
+        }
     }
     if (getHumState(data.humidity) == 2) {
-        return (data.humidity > HUM_ACCEPTABLE_MAX2)
-            ? "Reducir humedad"
-            : "Aumentar humedad";
+        if (data.humidity > HUM_ACCEPTABLE_MAX2) {
+            return "Reducir humedad";
+        } else {
+            return "Aumentar humedad";
+        }
     }
     if (getLightState(data.light) == 2) {
         return "Reducir iluminacion";

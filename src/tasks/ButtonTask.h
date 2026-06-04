@@ -8,14 +8,16 @@
 
 class ButtonTask {
 public:
-    // Ahora recibe DOS colas: una para DisplayTask y otra para SensorTask
-    // Así cada tarea recibe su propia copia del comando (mismo principio que con los sensores)
-    static void start(QueueHandle_t cmdQueueDisplay, QueueHandle_t cmdQueueSensor);
+    // Recibe tres colas: una para Display, una para Sensor y una para Storage
+    static void start(QueueHandle_t cmdQueueDisplay,
+                      QueueHandle_t cmdQueueSensor,
+                      QueueHandle_t cmdQueueStorage);
 
 private:
     static TaskHandle_t  _taskHandle;         // Manejador de la tarea FreeRTOS
     static QueueHandle_t _cmdQueueDisplay;    // Cola de comandos para DisplayTask
     static QueueHandle_t _cmdQueueSensor;     // Cola de comandos para SensorTask
+    static QueueHandle_t _cmdQueueStorage;    // Cola de comandos para StorageTask
 
     static void taskFunction(void* pvParams); // Bucle principal
 };
