@@ -12,6 +12,18 @@ SensorData        WebServerTask::_currentData = {0};
 SemaphoreHandle_t WebServerTask::_dataMutex   = nullptr;
 
 // ============================================================================
+// FUNCIÓN HELPER - Extrae solo el nombre del archivo sin path
+// ============================================================================
+static String sdBasename(const char* fullPath) {
+    String s = String(fullPath);
+    int lastSlash = s.lastIndexOf('/');
+    if (lastSlash >= 0) {
+        return s.substring(lastSlash + 1);
+    }
+    return s;
+}
+
+// ============================================================================
 // HTML, CSS y JS alojado en memoria FLASH (PROGMEM) para ahorrar mucha RAM
 // ============================================================================
 const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
@@ -683,33 +695,34 @@ void WebServerTask::handleApiSessions() {
 
     File file = root.openNextFile();
     while (file) {
-        String name = String(file.name());
+        String fullPath = String(file.name());
+        String name = sdBasename(fullPath.c_str());
         file.close();
 
-        int slashIdx = name.lastIndexOf('/');
-        if (slashIdx >= 0) name = name.substring(slashIdx + 1);
-
-        if (name.endsWith("_stats.json")) {
+        if (name.indexOf("_stats") >= 0) {
             int firstUnderscore = name.indexOf('_');
             int secondUnderscore = name.indexOf('_', firstUnderscore + 1);
+            
             if (firstUnderscore >= 0 && secondUnderscore > firstUnderscore) {
                 String idStr = name.substring(firstUnderscore + 1, secondUnderscore);
                 int sessionId = idStr.toInt();
                 
-                String fullPath = String(SD_BASE_PATH) + "/" + name;
-                File sf = SD.open(fullPath.c_str(), FILE_READ);
-                if (sf) {
-                    DynamicJsonDocument sd(1024);
-                    DeserializationError e = deserializeJson(sd, sf);
-                    sf.close();
-                    if (!e) {
-                        JsonObject s = sessions.createNestedObject();
-                        s["id"]         = sessionId;
-                        s["sleepScore"] = sd["sleepScore"]  | 0;
-                        s["duration"]   = sd["duration"]    | 0;
-                        s["date"]       = sd["date"]        | "";
-                        s["startTime"]  = sd["startTime"]   | "";
-                        s["endTime"]    = sd["endTime"]     | "";
+                if (sessionId > 0) {
+                    String fullPathFile = String(SD_BASE_PATH) + "/" + name;
+                    File sf = SD.open(fullPathFile.c_str(), FILE_READ);
+                    if (sf) {
+                        DynamicJsonDocument sd(2048);
+                        DeserializationError e = deserializeJson(sd, sf);
+                        sf.close();
+                        if (!e) {
+                            JsonObject s = sessions.createNestedObject();
+                            s["id"]         = sessionId;
+                            s["sleepScore"] = sd["sleepScore"]  | 0;
+                            s["duration"]   = sd["duration"]    | 0;
+                            s["date"]       = sd["date"]        | "";
+                            s["startTime"]  = sd["startTime"]   | "";
+                            s["endTime"]    = sd["endTime"]     | "";
+                        }
                     }
                 }
             }
@@ -730,14 +743,39 @@ void WebServerTask::handleApiSessionStats() {
     }
 
     int idNum = server.arg("id").toInt();
-    char path[80];
-    snprintf(path, sizeof(path), "%s/session_%03d_stats.json", SD_BASE_PATH, idNum);
-
-    File f = SD.open(path, FILE_READ);
-    if (!f) {
+    String statsPath = "";
+    
+    File root = SD.open(SD_BASE_PATH);
+    if (root) {
+        File file = root.openNextFile();
+        while (file) {
+            String fullPath = String(file.name());
+            String name = sdBasename(fullPath.c_str());
+            file.close();
+            
+            char searchPattern[32];
+            snprintf(searchPattern, sizeof(searchPattern), "session_%03d_stats", idNum);
+            
+            if (name.indexOf(searchPattern) >= 0) {
+                statsPath = String(SD_BASE_PATH) + "/" + name;
+                break;
+            }
+            file = root.openNextFile();
+        }
+        root.close();
+    }
+    
+    if (statsPath.length() == 0) {
         server.send(404, "application/json", "{\"error\":\"Sesion no encontrada\"}");
         return;
     }
+    
+    File f = SD.open(statsPath.c_str(), FILE_READ);
+    if (!f) {
+        server.send(500, "application/json", "{\"error\":\"No se pudo abrir el archivo\"}");
+        return;
+    }
+    
     String content = f.readString();
     f.close();
     server.send(200, "application/json", content);
@@ -750,16 +788,43 @@ void WebServerTask::handleApiSessionAlerts() {
     }
 
     int idNum = server.arg("id").toInt();
-    char path[80];
-    snprintf(path, sizeof(path), "%s/session_%03d_alerts.json", SD_BASE_PATH, idNum);
-
-    File f = SD.open(path, FILE_READ);
-    if (!f) {
-        char emptyResp[64];
+    String alertsPath = "";
+    
+    File root = SD.open(SD_BASE_PATH);
+    if (root) {
+        File file = root.openNextFile();
+        while (file) {
+            String fullPath = String(file.name());
+            String name = sdBasename(fullPath.c_str());
+            file.close();
+            
+            char searchPattern[32];
+            snprintf(searchPattern, sizeof(searchPattern), "session_%03d_alerts", idNum);
+            
+            if (name.indexOf(searchPattern) >= 0) {
+                alertsPath = String(SD_BASE_PATH) + "/" + name;
+                break;
+            }
+            file = root.openNextFile();
+        }
+        root.close();
+    }
+    
+    if (alertsPath.length() == 0) {
+        char emptyResp[128];
         snprintf(emptyResp, sizeof(emptyResp), "{\"sessionId\":%d,\"alerts\":[]}", idNum);
         server.send(200, "application/json", emptyResp);
         return;
     }
+    
+    File f = SD.open(alertsPath.c_str(), FILE_READ);
+    if (!f) {
+        char emptyResp[128];
+        snprintf(emptyResp, sizeof(emptyResp), "{\"sessionId\":%d,\"alerts\":[]}", idNum);
+        server.send(200, "application/json", emptyResp);
+        return;
+    }
+    
     String content = f.readString();
     f.close();
     server.send(200, "application/json", content);
@@ -781,13 +846,11 @@ void WebServerTask::handleApiSessionData() {
     if (root) {
         File f = root.openNextFile();
         while (f) {
-            String name = String(f.name());
+            String fullPath = String(f.name());
+            String name = sdBasename(fullPath.c_str());
             f.close();
 
-            int slashIdx = name.lastIndexOf('/');
-            if (slashIdx >= 0) name = name.substring(slashIdx + 1);
-
-            if (name.startsWith(prefix) && name.endsWith(".csv")) {
+            if (name.startsWith(prefix) && name.indexOf("_alerts") < 0 && name.indexOf("_stats") < 0) {
                 csvPath = String(SD_BASE_PATH) + "/" + name;
                 break;
             }
@@ -820,7 +883,7 @@ void WebServerTask::handleApiSessionData() {
         line.trim();
         if (line.length() == 0 || line.startsWith("#")) continue;
 
-        if (!headerSkipped && line.startsWith("timestamp")) {
+        if (!headerSkipped && (line.startsWith("timestamp") || line.startsWith("time"))) {
             headerSkipped = true;
             continue;
         }
