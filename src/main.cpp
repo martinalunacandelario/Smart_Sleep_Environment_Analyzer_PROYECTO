@@ -1,34 +1,45 @@
 #include <Arduino.h>
 #include "tasks/SensorTask.h"
 #include "tasks/DisplayTask.h"
-#include "tasks/ButtonTask.h"          
+#include "tasks/ButtonTask.h"
+#include "tasks/AlertTask.h"
+#include "tasks/StorageTask.h"
 
-QueueHandle_t sensorDataQueue = nullptr;
-QueueHandle_t displayCommandQueue = nullptr;
+// Colas de datos de sensores (una por consumidor)
+QueueHandle_t sensorQueueForDisplay = nullptr;  // SensorTask → DisplayTask
+QueueHandle_t sensorQueueForAlert   = nullptr;  // SensorTask → AlertTask
+QueueHandle_t sensorQueueForStorage = nullptr;  // SensorTask → StorageTask
+
+// Colas de comandos: ButtonTask publica en ellas
+QueueHandle_t displayCommandQueue   = nullptr;  // ButtonTask → DisplayTask
+QueueHandle_t sensorCommandQueue    = nullptr;  // ButtonTask → SensorTask (NUEVA)
+QueueHandle_t recommendationQueue   = nullptr;  // AlertTask → DisplayTask
 
 void setup() {
     Serial.begin(115200);
     delay(2000);
     Serial.println("\n=== Smart Sleep Environment Analyzer ===");
 
-    // Cola para datos de sensores (10 elementos)
-    sensorDataQueue = xQueueCreate(10, sizeof(SensorData));
-    if (sensorDataQueue == nullptr) {
-        Serial.println("Error al crear la cola de sensores");
-        while(1);
-    }
+    // Crear colas de datos (una por consumidor)
+    sensorQueueForDisplay = xQueueCreate(10, sizeof(SensorData));
+    sensorQueueForAlert   = xQueueCreate(10, sizeof(SensorData));
+    sensorQueueForStorage = xQueueCreate(10, sizeof(SensorData));
 
-    // Cola para comandos de display (inicio/fin sesión)
+    // Cola de comandos para DisplayTask
     displayCommandQueue = xQueueCreate(5, sizeof(DisplayCommand));
-    if (displayCommandQueue == nullptr) {
-        Serial.println("Error al crear la cola de comandos de display");
-        while(1);
-    }
+
+    // Cola de comandos para SensorTask (para que sepa cuándo iniciar/finalizar sesión)
+    sensorCommandQueue = xQueueCreate(5, sizeof(DisplayCommand));
+
+    // Cola de recomendaciones
+    recommendationQueue = xQueueCreate(5, sizeof(Recommendation));
 
     // Iniciar tareas
-    SensorTask::start(sensorDataQueue);
-    DisplayTask::start(sensorDataQueue, displayCommandQueue);
-    ButtonTask::start(displayCommandQueue);   // Iniciar la tarea del botón (le pasa la misma cola)
+    SensorTask::start(sensorQueueForDisplay, sensorQueueForAlert, sensorQueueForStorage, sensorCommandQueue);
+    DisplayTask::start(sensorQueueForDisplay, displayCommandQueue, recommendationQueue);
+    ButtonTask::start(displayCommandQueue, sensorCommandQueue);  // AHORA CON 2 PARÁMETROS
+    AlertTask::start(sensorQueueForAlert, recommendationQueue);
+    StorageTask::start(sensorQueueForStorage, displayCommandQueue);
 }
 
 void loop() {

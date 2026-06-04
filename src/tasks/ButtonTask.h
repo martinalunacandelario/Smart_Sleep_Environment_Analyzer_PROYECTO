@@ -4,21 +4,20 @@
 #include <Arduino.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
-
-// Estructura que se enviará a la cola (ya definida en DisplayTask.h)
-// Incluimos DisplayTask.h para tener DisplayCommand
-#include "DisplayTask.h"
+#include "DisplayTask.h"  // Para tener DisplayCommand
 
 class ButtonTask {
 public:
-    // Inicia la tarea: recibe la cola donde enviar los comandos de sesión
-    static void start(QueueHandle_t cmdQueue);
+    // Ahora recibe DOS colas: una para DisplayTask y otra para SensorTask
+    // Así cada tarea recibe su propia copia del comando (mismo principio que con los sensores)
+    static void start(QueueHandle_t cmdQueueDisplay, QueueHandle_t cmdQueueSensor);
 
 private:
-    static TaskHandle_t _taskHandle;      // Manejador de la tarea FreeRTOS
-    static QueueHandle_t _cmdQueue;       // Cola para enviar comandos (DisplayCommand)
+    static TaskHandle_t  _taskHandle;         // Manejador de la tarea FreeRTOS
+    static QueueHandle_t _cmdQueueDisplay;    // Cola de comandos para DisplayTask
+    static QueueHandle_t _cmdQueueSensor;     // Cola de comandos para SensorTask
 
-    static void taskFunction(void* pvParams);  // Bucle principal
+    static void taskFunction(void* pvParams); // Bucle principal
 };
 
 #endif

@@ -9,6 +9,7 @@
 TaskHandle_t DisplayTask::_taskHandle = nullptr;   // Handle de la tarea FreeRTOS (inicialmente vacío)
 QueueHandle_t DisplayTask::_sensorQueue = nullptr; // Cola de entrada de datos de sensores
 QueueHandle_t DisplayTask::_cmdQueue = nullptr;    // Cola de entrada de comandos (inicio/fin sesión)
+QueueHandle_t DisplayTask::_recQueue = nullptr;    // Cola de entrada de recomendaciones (desde AlertTask)
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C DisplayTask::_display(U8G2_R0, U8X8_PIN_NONE); // Objeto pantalla OLED SH1106 128x64 por I2C, sin pin de reset
 
@@ -17,12 +18,17 @@ bool DisplayTask::_sessionActive = false;           // Indica si hay una sesión
 unsigned long DisplayTask::_sessionEndTime = 0;    // Timestamp en ms cuando debe apagarse la pantalla tras sesión
 bool DisplayTask::_displayOn = true;               // Estado actual de la pantalla (true = encendida)
 
+bool DisplayTask::_showingRec = false;              // Indica si se está mostrando una recomendación
+unsigned long DisplayTask::_recEndTime = 0;         // Momento en que termina de mostrarse
+char DisplayTask::_currentRec[64] = "";             // Texto de la recomendación actual
+
 // ============================================================================
 // start() - Inicializa la pantalla y crea la tarea
 // ============================================================================
-void DisplayTask::start(QueueHandle_t sensorQueue, QueueHandle_t cmdQueue) {
+void DisplayTask::start(QueueHandle_t sensorQueue, QueueHandle_t cmdQueue, QueueHandle_t recQueue) {
     _sensorQueue = sensorQueue;   // Guardar referencia a la cola de sensores
     _cmdQueue = cmdQueue;         // Guardar referencia a la cola de comandos
+    _recQueue = recQueue;         // Guardar referencia a la cola de recomendaciones
 
     Wire.begin(I2C_SDA, I2C_SCL);  // Inicializar bus I2C con los pines definidos en config.h
     Wire.setClock(400000);          // Configurar velocidad I2C a 400 kHz (modo fast)
@@ -61,6 +67,7 @@ void DisplayTask::taskFunction(void* pvParams) {
     TickType_t lastWakeTime = xTaskGetTickCount(); // Marca de tiempo para el ciclo periódico exacto
     SensorData newData;   // Buffer temporal para recibir datos de sensores
     DisplayCommand cmd;   // Buffer temporal para recibir comandos
+    Recommendation rec;   // Buffer temporal para recibir recomendaciones
 
     while (true) {
         // 1. Intentar recibir nuevos datos de sensores sin bloquear la tarea
@@ -85,7 +92,15 @@ void DisplayTask::taskFunction(void* pvParams) {
             }
         }
 
-        // 3. Comprobar si ha llegado el momento de apagar la pantalla tras la sesión
+        // 3. Intentar recibir una recomendación desde AlertTask (no bloqueante)
+        if (xQueueReceive(_recQueue, &rec, 0) == pdTRUE) {
+            _showingRec = true;                                                                        // Activar modo recomendación
+            _recEndTime = millis() + (rec.duration > 0 ? rec.duration : RECOMMENDATION_DURATION_MS);  // Calcular cuándo expira
+            strncpy(_currentRec, rec.message, 63);                                                    // Copiar mensaje
+            _currentRec[63] = '\0';                                                                   // Asegurar terminación nula
+        }
+
+        // 4. Comprobar si ha llegado el momento de apagar la pantalla tras la sesión
         if (!_sessionActive && _sessionEndTime != 0 && millis() > _sessionEndTime) {
             if (_displayOn) {
                 _display.setPowerSave(1);   // Apagar pantalla físicamente (modo ahorro de energía)
@@ -94,12 +109,12 @@ void DisplayTask::taskFunction(void* pvParams) {
             _sessionEndTime = 0;   // Resetear para no volver a entrar en esta condición
         }
 
-        // 4. Redibujar la pantalla solo si está encendida
+        // 5. Redibujar la pantalla solo si está encendida
         if (_displayOn) {
             updateDisplay();
         }
 
-        // 5. Esperar hasta el siguiente ciclo respetando el intervalo exacto
+        // 6. Esperar hasta el siguiente ciclo respetando el intervalo exacto
         vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(DISPLAY_INTERVAL_MS));
     }
 }
@@ -119,8 +134,8 @@ void DisplayTask::updateDisplay() {
     _display.print(buf);         // Imprimir la hora en el buffer
 
     // --- Estado de calidad del ambiente (y=19) ---
-    _display.setCursor(5, 19);        // Posición: inicio de línea 2
-    _display.print("Estado: ");       // Etiqueta fija
+    _display.setCursor(5, 19);          // Posición: inicio de línea 2
+    _display.print("Estado: ");         // Etiqueta fija
     _display.print(getQualityString()); // Resultado evaluado: "BUENO", "REGULAR" o "MALO"
 
     // --- Concentración de CO2 (y=29) ---
@@ -138,10 +153,18 @@ void DisplayTask::updateDisplay() {
     _display.setCursor(5, 49);   // Posición: inicio de línea 5
     _display.print(buf);         // Imprimir humedad en el buffer
 
-    // --- Nivel de luz y estado de sesión (y=59) ---
-    snprintf(buf, sizeof(buf), "Lux: %.0f   S:%s", _currentData.light, _sessionActive ? "ON " : "OFF"); // ON/OFF según sesión
-    _display.setCursor(5, 59);   // Posición: inicio de línea 6 (límite inferior de la pantalla)
-    _display.print(buf);         // Imprimir luz y estado de sesión en el buffer
+    // --- Línea 6: recomendación activa O datos de luz/sesión (y=59) ---
+    if (_showingRec && millis() < _recEndTime) {
+        // Hay recomendación activa: mostrarla truncada a 21 chars (128px / 6px por carácter)
+        snprintf(buf, sizeof(buf), "%.21s", _currentRec);
+        _display.setCursor(5, 59);   // Posición: inicio de línea 6
+        _display.print(buf);         // Imprimir recomendación (truncada si es larga)
+    } else {
+        _showingRec = false;   // Recomendación expirada, volver a datos normales
+        snprintf(buf, sizeof(buf), "Lux: %.0f   S:%s", _currentData.light, _sessionActive ? "ON " : "OFF"); // Lux y estado sesión
+        _display.setCursor(5, 59);   // Posición: inicio de línea 6
+        _display.print(buf);         // Imprimir luz y estado de sesión
+    }
 
     _display.sendBuffer();   // Volcar todo el buffer a la pantalla de golpe → sin parpadeo
 }
