@@ -1,42 +1,24 @@
 #include "ButtonTask.h"
 #include "../../include/config.h"
 
-// Pin del pulsador (GPIO25)
-#define BUTTON_PIN  25
-
-// Tiempo de antirrebote en milisegundos
-#define DEBOUNCE_DELAY_MS  50
-
-// Prioridad y tamaño de pila de la tarea
-#define BUTTON_TASK_PRIORITY  2
-#define BUTTON_TASK_STACK     2048
+#define BUTTON_PIN            25   // GPIO25 — pulsador físico
+#define DEBOUNCE_DELAY_MS     50   // Tiempo de antirrebote en ms
+#define BUTTON_TASK_PRIORITY   2   // Prioridad baja
+#define BUTTON_TASK_STACK   2048   // Tamaño de pila
 
 // ============================================================================
 // INICIALIZACIÓN DE MIEMBROS ESTÁTICOS
 // ============================================================================
-TaskHandle_t  ButtonTask::_taskHandle      = nullptr;
-QueueHandle_t ButtonTask::_cmdQueueDisplay = nullptr;  // Cola para DisplayTask
-QueueHandle_t ButtonTask::_cmdQueueSensor  = nullptr;  // Cola para SensorTask
-QueueHandle_t ButtonTask::_cmdQueueStorage = nullptr;  // Cola para StorageTask
-QueueHandle_t ButtonTask::_cmdQueueAlert   = nullptr;  // Cola para AlertTask
+TaskHandle_t ButtonTask::_taskHandle = nullptr;
 
 // ============================================================================
-// start() - Inicializa el botón y crea la tarea
+// start() - Configura el pin e inicia la tarea
 // ============================================================================
-void ButtonTask::start(QueueHandle_t cmdQueueDisplay,
-                       QueueHandle_t cmdQueueSensor,
-                       QueueHandle_t cmdQueueStorage,
-                       QueueHandle_t cmdQueueAlert) {
-    _cmdQueueDisplay = cmdQueueDisplay;  // Guardar cola de Display
-    _cmdQueueSensor  = cmdQueueSensor;   // Guardar cola de Sensor
-    _cmdQueueStorage = cmdQueueStorage;  // Guardar cola de Storage
-    _cmdQueueAlert   = cmdQueueAlert;    // Guardar cola de Alert
-
-    // Configurar el pin del botón como entrada con pull-up interna
+void ButtonTask::start() {
+    // Configurar pin como entrada con pull-up interna
     // (LOW = presionado, HIGH = soltado)
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
-    // Crear la tarea FreeRTOS en el núcleo 1 (prioridad baja)
     xTaskCreatePinnedToCore(
         taskFunction,
         "ButtonTask",
@@ -44,58 +26,46 @@ void ButtonTask::start(QueueHandle_t cmdQueueDisplay,
         nullptr,
         BUTTON_TASK_PRIORITY,
         &_taskHandle,
-        1
+        1   // Núcleo 1
     );
 }
 
 // ============================================================================
-// taskFunction() - Detecta pulsaciones y publica el comando en las CUATRO colas
+// taskFunction() - Detecta pulsaciones y delega en SessionManager
+// SessionManager notifica automáticamente a Display, Sensor, Storage y Alert
 // ============================================================================
 void ButtonTask::taskFunction(void* pvParams) {
-    int lastButtonState   = HIGH;  // Último estado leído del botón
-    int stableButtonState = HIGH;  // Estado estable tras el antirrebote
+    int lastButtonState   = HIGH;  // Último estado leído
+    int stableButtonState = HIGH;  // Estado estable tras antirrebote
     unsigned long lastDebounceTime = 0;
 
-    bool sessionActive = false;  // Estado de sesión local (empieza inactiva)
-
     while (true) {
-        // Leer el estado actual del botón (LOW = presionado, HIGH = soltado)
         int reading = digitalRead(BUTTON_PIN);
 
-        // Si el estado ha cambiado, reiniciar el temporizador de rebote
+        // Si el estado ha cambiado, reiniciar temporizador de rebote
         if (reading != lastButtonState) {
             lastDebounceTime = millis();
         }
 
-        // Si ha pasado el tiempo de debounce, el estado se considera estable
+        // Si ha pasado el tiempo de debounce, estado considerado estable
         if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY_MS) {
             if (reading != stableButtonState) {
                 stableButtonState = reading;
 
-                // Solo reaccionar en la transición HIGH → LOW (botón presionado)
+                // Solo reaccionar en transición HIGH → LOW (botón presionado)
                 if (stableButtonState == LOW) {
-                    sessionActive = !sessionActive;  // Alternar estado de sesión
-
-                    // Preparar el comando con el nuevo estado
-                    DisplayCommand cmd;
-                    cmd.sessionActive = sessionActive;
-
-                    // Publicar en las CUATRO colas para que cada tarea reciba su copia
-                    xQueueSend(_cmdQueueDisplay, &cmd, 0);  // Para DisplayTask
-                    xQueueSend(_cmdQueueSensor,  &cmd, 0);  // Para SensorTask
-                    xQueueSend(_cmdQueueStorage, &cmd, 0);  // Para StorageTask
-                    xQueueSend(_cmdQueueAlert,   &cmd, 0);  // Para AlertTask
-
-                    Serial.printf("[Button] Sesion %s\n",
-                                  sessionActive ? "INICIADA" : "FINALIZADA");
+                    // Delegar en SessionManager: él actualiza el estado
+                    // y notifica a todas las tareas suscritas automáticamente
+                    if (SessionManager::isSessionActive()) {
+                        SessionManager::stopSession();
+                    } else {
+                        SessionManager::startSession();
+                    }
                 }
             }
         }
 
-        // Guardar la última lectura para la próxima iteración
         lastButtonState = reading;
-
-        // Pausa de 10 ms para no saturar la CPU
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(10));  // Revisar cada 10 ms
     }
 }

@@ -4,6 +4,8 @@
 #include "tasks/ButtonTask.h"
 #include "tasks/AlertTask.h"
 #include "tasks/StorageTask.h"
+#include "tasks/WebServerTask.h"
+#include "SessionManager.h"
 
 // ============================================================================
 // COLAS DE DATOS DE SENSORES (una por consumidor)
@@ -13,13 +15,18 @@ QueueHandle_t sensorQueueForAlert   = nullptr;  // SensorTask → AlertTask
 QueueHandle_t sensorQueueForStorage = nullptr;  // SensorTask → StorageTask
 
 // ============================================================================
-// COLAS DE COMANDOS (una por consumidor — nunca compartir entre tareas)
+// COLAS DE COMANDOS DE SESIÓN (una por consumidor, gestionadas por SessionManager)
+// SessionManager es la única fuente que escribe en estas colas.
+// Tanto el botón físico como la web usan SessionManager, nunca las colas directamente.
 // ============================================================================
-QueueHandle_t displayCommandQueue  = nullptr;  // ButtonTask → DisplayTask
-QueueHandle_t sensorCommandQueue   = nullptr;  // ButtonTask → SensorTask
-QueueHandle_t storageCommandQueue  = nullptr;  // ButtonTask → StorageTask
-QueueHandle_t alertCommandQueue    = nullptr;  // ButtonTask → AlertTask  ← NUEVA
+QueueHandle_t sessionQueueDisplay  = nullptr;  // SessionManager → DisplayTask
+QueueHandle_t sessionQueueSensor   = nullptr;  // SessionManager → SensorTask
+QueueHandle_t sessionQueueStorage  = nullptr;  // SessionManager → StorageTask
+QueueHandle_t sessionQueueAlert    = nullptr;  // SessionManager → AlertTask
 
+// ============================================================================
+// COLA DE RECOMENDACIONES
+// ============================================================================
 QueueHandle_t recommendationQueue  = nullptr;  // AlertTask → DisplayTask
 
 void setup() {
@@ -27,83 +34,88 @@ void setup() {
     delay(2000);
     Serial.println("\n=== Smart Sleep Environment Analyzer ===");
 
+    // Inicializar SessionManager PRIMERO (antes de crear cualquier tarea o cola)
+    SessionManager::init();
+
     // ========================================================================
     // COLAS DE DATOS
     // ========================================================================
     sensorQueueForDisplay = xQueueCreate(10, sizeof(SensorData));
     if (sensorQueueForDisplay == nullptr) {
-        Serial.println("Error al crear sensorQueueForDisplay");
-        while(1);
+        Serial.println("Error al crear sensorQueueForDisplay"); while(1);
     }
 
     sensorQueueForAlert = xQueueCreate(10, sizeof(SensorData));
     if (sensorQueueForAlert == nullptr) {
-        Serial.println("Error al crear sensorQueueForAlert");
-        while(1);
+        Serial.println("Error al crear sensorQueueForAlert"); while(1);
     }
 
     sensorQueueForStorage = xQueueCreate(10, sizeof(SensorData));
     if (sensorQueueForStorage == nullptr) {
-        Serial.println("Error al crear sensorQueueForStorage");
-        while(1);
+        Serial.println("Error al crear sensorQueueForStorage"); while(1);
     }
 
     // ========================================================================
-    // COLAS DE COMANDOS
+    // COLAS DE COMANDOS DE SESIÓN
     // ========================================================================
-    displayCommandQueue = xQueueCreate(5, sizeof(DisplayCommand));
-    if (displayCommandQueue == nullptr) {
-        Serial.println("Error al crear displayCommandQueue");
-        while(1);
+    sessionQueueDisplay = xQueueCreate(5, sizeof(SessionCommand));
+    if (sessionQueueDisplay == nullptr) {
+        Serial.println("Error al crear sessionQueueDisplay"); while(1);
     }
 
-    sensorCommandQueue = xQueueCreate(5, sizeof(DisplayCommand));
-    if (sensorCommandQueue == nullptr) {
-        Serial.println("Error al crear sensorCommandQueue");
-        while(1);
+    sessionQueueSensor = xQueueCreate(5, sizeof(SessionCommand));
+    if (sessionQueueSensor == nullptr) {
+        Serial.println("Error al crear sessionQueueSensor"); while(1);
     }
 
-    storageCommandQueue = xQueueCreate(5, sizeof(DisplayCommand));
-    if (storageCommandQueue == nullptr) {
-        Serial.println("Error al crear storageCommandQueue");
-        while(1);
+    sessionQueueStorage = xQueueCreate(5, sizeof(SessionCommand));
+    if (sessionQueueStorage == nullptr) {
+        Serial.println("Error al crear sessionQueueStorage"); while(1);
     }
 
-    // Cola de comandos exclusiva para AlertTask
-    alertCommandQueue = xQueueCreate(5, sizeof(DisplayCommand));
-    if (alertCommandQueue == nullptr) {
-        Serial.println("Error al crear alertCommandQueue");
-        while(1);
+    sessionQueueAlert = xQueueCreate(5, sizeof(SessionCommand));
+    if (sessionQueueAlert == nullptr) {
+        Serial.println("Error al crear sessionQueueAlert"); while(1);
     }
 
     recommendationQueue = xQueueCreate(5, sizeof(Recommendation));
     if (recommendationQueue == nullptr) {
-        Serial.println("Error al crear recommendationQueue");
-        while(1);
+        Serial.println("Error al crear recommendationQueue"); while(1);
     }
+
+    // ========================================================================
+    // SUSCRIBIR COLAS AL SESSION MANAGER
+    // Al llamar startSession() o stopSession() desde cualquier sitio,
+    // SessionManager notifica automáticamente a todas estas colas
+    // ========================================================================
+    SessionManager::subscribe(sessionQueueDisplay);
+    SessionManager::subscribe(sessionQueueSensor);
+    SessionManager::subscribe(sessionQueueStorage);
+    SessionManager::subscribe(sessionQueueAlert);
 
     // ========================================================================
     // INICIO DE TAREAS
     // ========================================================================
 
-    // SensorTask: publica en 3 colas de datos y escucha su cola de comandos
+    // SensorTask: publica datos en 3 colas, escucha su cola de sesión
     SensorTask::start(sensorQueueForDisplay, sensorQueueForAlert,
-                      sensorQueueForStorage, sensorCommandQueue);
+                      sensorQueueForStorage, sessionQueueSensor);
 
-    // DisplayTask: recibe datos, comandos de sesión y recomendaciones
-    DisplayTask::start(sensorQueueForDisplay, displayCommandQueue, recommendationQueue);
+    // DisplayTask: recibe datos de sensores, comandos de sesión y recomendaciones
+    DisplayTask::start(sensorQueueForDisplay, sessionQueueDisplay, recommendationQueue);
 
-    // ButtonTask: publica comandos en 4 colas separadas (Display, Sensor, Storage, Alert)
-    ButtonTask::start(displayCommandQueue, sensorCommandQueue,
-                      storageCommandQueue, alertCommandQueue);
+    // ButtonTask: ya no gestiona colas directamente, delega en SessionManager
+    ButtonTask::start();
 
-    // AlertTask: controla LED RGB y buzzer, genera recomendaciones
-    // Ahora recibe su propia cola de comandos de sesión
+    // AlertTask: controla LED RGB y buzzer, escucha su cola de sesión
     AlertTask::start(sensorQueueForAlert, recommendationQueue,
-                     StorageTask::getSessionCounterPtr(), alertCommandQueue);
+                     StorageTask::getSessionCounterPtr(), sessionQueueAlert);
 
-    // StorageTask: guarda en SD y escucha su propia cola de comandos
-    StorageTask::start(sensorQueueForStorage, storageCommandQueue);
+    // StorageTask: guarda en SD, escucha su cola de sesión
+    StorageTask::start(sensorQueueForStorage, sessionQueueStorage);
+
+    // WebServerTask: ya no necesita cola, usa SessionManager directamente
+    WebServerTask::start();
 }
 
 void loop() {

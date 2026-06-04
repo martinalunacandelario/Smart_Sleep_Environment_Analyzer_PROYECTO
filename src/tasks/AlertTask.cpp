@@ -1,6 +1,5 @@
 #include "AlertTask.h"
 #include "../../include/config.h"
-#include "DisplayTask.h"
 #include <SPI.h>
 #include <SD.h>
 

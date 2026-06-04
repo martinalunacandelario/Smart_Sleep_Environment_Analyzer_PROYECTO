@@ -96,7 +96,7 @@
 
 // Directorio y formato de archivos en la microSD
 #define SD_BASE_PATH            "/sessions"          // Carpeta donde se guardan las sesiones
-#define SD_FILENAME_PREFIX      "session_"           // Prefijo de los archivos CSV (cambio a session_)
+#define SD_FILENAME_PREFIX      "session_"           // Prefijo de los archivos CSV
 #define SD_FILENAME_EXT         ".csv"               // Extensión de los archivos de datos
 
 // ============================================================
@@ -106,23 +106,25 @@
 #define ANALYSIS_TASK_STACK     8192     // Tamaño de pila en bytes (8KB) - necesita más memoria
 
 // ============================================================
+// CONFIGURACIÓN DE ACCESO PUNTO (ACCESS POINT) PARA EL SERVIDOR WEB
+// ============================================================
+#define AP_SSID                 "SmartSleep_Analyzer"   // Nombre de la red WiFi del ESP32
+#define AP_PASSWORD             "12345678"              // Contraseña (mínimo 8 caracteres)
+#define AP_CHANNEL              6                       // Canal WiFi (1-11)
+#define AP_HIDDEN               false                   // Red visible (false = visible)
+
+// ============================================================
+// CONFIGURACIÓN DE LA TAREA WEB (WebServerTask)
+// ============================================================
+#define WEB_TASK_PRIORITY       2        // Prioridad media (2)
+#define WEB_TASK_STACK          8192     // Tamaño de pila (8KB)
+#define WEB_SERVER_PORT         80       // Puerto del servidor web
+
+// ============================================================
 // CONFIGURACIÓN DE NTP (Network Time Protocol) - PARA FUTURO
 // ============================================================
 // #define NTP_SERVER              "pool.ntp.org"       // Servidor NTP gratuito
 // #define GMT_OFFSET_SEC          3600                 // UTC+1 (España peninsular)
 // #define DAYLIGHT_OFFSET_SEC     3600                 // Horario de verano (1 hora)
-
-// ============================================================
-// CONFIGURACIÓN DE LA TAREA WEB (WebServerTask) - PARA FUTURO
-// ============================================================
-// #define WEB_TASK_PRIORITY       2        // Prioridad media (2)
-// #define WEB_TASK_STACK          8192     // Tamaño de pila (8KB)
-// #define WEB_SERVER_PORT         80       // Puerto del servidor web
-
-// ============================================================
-// CREDENCIALES WiFi - PARA FUTURO (¡NO SUBIR A GIT!)
-// ============================================================
-// #define WIFI_SSID               "TU_WIFI_SSID"       // Cambia por tu SSID
-// #define WIFI_PASSWORD           "TU_WIFI_PASSWORD"   // Cambia por tu contraseña
 
 #endif // CONFIG_H
