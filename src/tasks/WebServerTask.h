@@ -8,8 +8,9 @@
 #include <SD.h>
 #include <ArduinoJson.h>
 #include <freertos/task.h>
+#include <freertos/semphr.h>      // ← AÑADIR: para SemaphoreHandle_t
 #include "SensorTask.h"
-#include "../SessionManager.h"  // Para controlar sesiones sin colas
+#include "../SessionManager.h"    // Para controlar sesiones sin colas
 
 class WebServerTask {
 public:
@@ -23,6 +24,7 @@ private:
     static TaskHandle_t _taskHandle;
     static WebServer    server;
     static SensorData   _currentData;  // Últimos datos recibidos de SensorTask
+    static SemaphoreHandle_t _dataMutex;   // ← AÑADIR: protege _currentData
 
     static void setupAccessPoint();
     static void taskFunction(void* pvParams);

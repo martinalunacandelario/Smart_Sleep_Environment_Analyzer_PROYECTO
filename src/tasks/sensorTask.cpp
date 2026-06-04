@@ -1,11 +1,9 @@
 #include "SensorTask.h"
+#include "WebServerTask.h"          // Para actualizar datos en la web
 #include "../../lib/drivers/SCD41.h"
 #include "../../lib/drivers/BH1750.h"
 #include "../../include/config.h"
-
-struct DisplayCommand {
-    bool sessionActive;
-};
+#include "SessionManager.h"         // Para SessionCommand (NO definirla de nuevo)
 
 // ============================================================================
 // INICIALIZACIÓN DE MIEMBROS ESTÁTICOS
@@ -13,7 +11,7 @@ struct DisplayCommand {
 TaskHandle_t  SensorTask::_taskHandle        = nullptr;
 QueueHandle_t SensorTask::_queueForDisplay   = nullptr;  // Cola para DisplayTask
 QueueHandle_t SensorTask::_queueForAlert     = nullptr;  // Cola para AlertTask
-QueueHandle_t SensorTask::_queueForStorage   = nullptr;  // Cola para StorageTask (NUEVA)
+QueueHandle_t SensorTask::_queueForStorage   = nullptr;  // Cola para StorageTask
 QueueHandle_t SensorTask::_cmdQueue          = nullptr;  // Cola de comandos de sesión
 
 // Objetos driver
@@ -23,10 +21,13 @@ static BH1750 bh1750(BH1750_ADDR, &Wire);
 // ============================================================================
 // start() - Guarda las colas, inicializa sensores y crea la tarea
 // ============================================================================
-void SensorTask::start(QueueHandle_t queueForDisplay, QueueHandle_t queueForAlert, QueueHandle_t queueForStorage, QueueHandle_t cmdQueue) {
+void SensorTask::start(QueueHandle_t queueForDisplay,
+                       QueueHandle_t queueForAlert,
+                       QueueHandle_t queueForStorage,
+                       QueueHandle_t cmdQueue) {
     _queueForDisplay = queueForDisplay;  // Cola para DisplayTask
     _queueForAlert   = queueForAlert;    // Cola para AlertTask
-    _queueForStorage = queueForStorage;  // Cola para StorageTask (NUEVA)
+    _queueForStorage = queueForStorage;  // Cola para StorageTask
     _cmdQueue        = cmdQueue;         // Cola de comandos
 
     Wire.begin(I2C_SDA, I2C_SCL);
@@ -64,8 +65,8 @@ QueueHandle_t SensorTask::getDataQueue() {
 // ============================================================================
 void SensorTask::taskFunction(void* pvParams) {
     TickType_t lastWakeTime = xTaskGetTickCount();
-    SensorData data;
-    DisplayCommand cmd;
+    SensorData     data;
+    SessionCommand cmd;      // SessionCommand viene de SessionManager.h
     bool sessionActive = false;
 
     Serial.println("[Sensor] Esperando inicio de sesion...");
@@ -90,7 +91,12 @@ void SensorTask::taskFunction(void* pvParams) {
                 // Enviar a las TRES colas de datos
                 xQueueSend(_queueForDisplay, &data, 0);  // Para DisplayTask
                 xQueueSend(_queueForAlert,   &data, 0);  // Para AlertTask
-                xQueueSend(_queueForStorage, &data, 0);  // Para StorageTask (NUEVA)
+                xQueueSend(_queueForStorage, &data, 0);  // Para StorageTask
+
+                // ============================================================
+                // CLAVE: Actualizar datos en tiempo real para la web
+                // ============================================================
+                WebServerTask::updateCurrentData(data);
 
                 Serial.printf("[Sensor] CO2:%.0f ppm T:%.1f C H:%.1f%% Luz:%.0f lux\n",
                               data.co2, data.temperature, data.humidity, data.light);
@@ -105,6 +111,9 @@ void SensorTask::taskFunction(void* pvParams) {
     }
 }
 
+// ============================================================================
+// readSensors() - Lee SCD41 y BH1750 y rellena la estructura SensorData
+// ============================================================================
 bool SensorTask::readSensors(SensorData &data) {
     bool ok = true;
     uint16_t co2_raw;
