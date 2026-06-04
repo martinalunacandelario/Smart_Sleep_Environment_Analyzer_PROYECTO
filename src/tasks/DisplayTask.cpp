@@ -1,308 +1,200 @@
-// ============================================================================
-// DisplayTask.cpp - Implementación de la tarea de visualización OLED
-// ============================================================================
-
 #include "DisplayTask.h"
-#include "Config.h"
-
-// ============================================================================
-// DEFINICIÓN DE CONSTANTES LOCALES
-// ============================================================================
-
-// Dimensiones OLED SH1106
-#define OLED_WIDTH 128
-#define OLED_HEIGHT 64
-#define OLED_PAGES 8
-#define OLED_CHARS_PER_LINE 21
-
-// Dirección I2C
-#define OLED_ADDR 0x3C
-
-// Prioridad de la tarea
-#define DISPLAY_TASK_PRIORITY 1
-
-// Tamaño de la pila
-#define DISPLAY_TASK_STACK 4096
+#include "../../include/config.h"          // Constantes globales (pines, intervalos, umbrales)
+#include <U8g2lib.h>                       // Librería para pantallas OLED
+#include <Wire.h>                          // Comunicación I2C
 
 // ============================================================================
 // INICIALIZACIÓN DE MIEMBROS ESTÁTICOS
 // ============================================================================
+TaskHandle_t DisplayTask::_taskHandle = nullptr;   // Handle de la tarea FreeRTOS (inicialmente vacío)
+QueueHandle_t DisplayTask::_sensorQueue = nullptr; // Cola de entrada de datos de sensores
+QueueHandle_t DisplayTask::_cmdQueue = nullptr;    // Cola de entrada de comandos (inicio/fin sesión)
+QueueHandle_t DisplayTask::_recQueue = nullptr;    // Cola de entrada de recomendaciones (desde AlertTask)
 
-TaskHandle_t DisplayTask::_taskHandle = nullptr;
-QueueHandle_t DisplayTask::_sensorQueue = nullptr;
-QueueHandle_t DisplayTask::_alertQueue = nullptr;
+U8G2_SH1106_128X64_NONAME_F_HW_I2C DisplayTask::_display(U8G2_R0, U8X8_PIN_NONE); // Objeto pantalla OLED SH1106 128x64 por I2C, sin pin de reset
 
-SensorData DisplayTask::_currentData;
-bool DisplayTask::_showingAlert = false;
-unsigned long DisplayTask::_alertEndTime = 0;
-char DisplayTask::_lastAlertMessage[64] = "";
-bool DisplayTask::_sessionActive = false;
-unsigned long DisplayTask::_sessionStart = 0;
+SensorData DisplayTask::_currentData = {0};        // Últimos datos recibidos de los sensores (todo a 0 al inicio)
+bool DisplayTask::_sessionActive = false;           // Indica si hay una sesión de sueño activa
+unsigned long DisplayTask::_sessionEndTime = 0;    // Timestamp en ms cuando debe apagarse la pantalla tras sesión
+bool DisplayTask::_displayOn = true;               // Estado actual de la pantalla (true = encendida)
+
+bool DisplayTask::_showingRec = false;              // Indica si se está mostrando una recomendación
+unsigned long DisplayTask::_recEndTime = 0;         // Momento en que termina de mostrarse
+char DisplayTask::_currentRec[64] = "";             // Texto de la recomendación actual
 
 // ============================================================================
-// start() - Punto de entrada público para iniciar la tarea
+// start() - Inicializa la pantalla y crea la tarea
 // ============================================================================
+void DisplayTask::start(QueueHandle_t sensorQueue, QueueHandle_t cmdQueue, QueueHandle_t recQueue) {
+    _sensorQueue = sensorQueue;   // Guardar referencia a la cola de sensores
+    _cmdQueue = cmdQueue;         // Guardar referencia a la cola de comandos
+    _recQueue = recQueue;         // Guardar referencia a la cola de recomendaciones
 
-void DisplayTask::start(QueueHandle_t sensorQueue, QueueHandle_t alertQueue) {
-    // Guardar las colas
-    _sensorQueue = sensorQueue;
-    _alertQueue = alertQueue;
-    
-    // Inicializar bus I2C para la OLED
-    Wire.begin(I2C_SDA, I2C_SCL);
-    Wire.setClock(400000);  // Máxima velocidad para OLED
-    
-    // Inicializar la pantalla OLED
-    initOLED();
-    clearDisplay();
-    
-    // Mostrar mensaje de bienvenida
-    writeLine(0, "SmartSleep");
-    writeLine(1, "Analyzer v3.0");
-    writeLine(2, "Iniciando...");
-    writeLine(3, "");
-    
-    // Crear la tarea FreeRTOS en el Core 1
+    Wire.begin(I2C_SDA, I2C_SCL);  // Inicializar bus I2C con los pines definidos en config.h
+    Wire.setClock(400000);          // Configurar velocidad I2C a 400 kHz (modo fast)
+
+    _display.begin();                        // Inicializar la pantalla OLED
+    _display.setFont(u8g2_font_6x10_tf);    // Fuente de 6x10 píxeles, suficiente para 6 líneas en 64px
+    _display.setFlipMode(0);                 // Sin rotación de pantalla
+    _display.setPowerSave(0);               // Encender la pantalla (0 = activa, 1 = apagada)
+    _displayOn = true;                       // Sincronizar el flag de estado
+
+    // Mostrar pantalla de bienvenida mientras el sistema arranca
+    _display.clearBuffer();          // Limpiar el buffer en RAM
+    _display.setCursor(5, 20);       // Posición: x=5, y=20
+    _display.print("SmartSleep");    // Nombre del proyecto
+    _display.setCursor(5, 40);       // Posición: x=5, y=40
+    _display.print("Iniciando...");  // Mensaje de arranque
+    _display.sendBuffer();           // Volcar buffer a la pantalla física
+    delay(2000);                     // Esperar 2 segundos para que se lea el mensaje
+
+    // Crear la tarea FreeRTOS fijada al núcleo 1 (núcleo 0 reservado para WiFi/BT)
     xTaskCreatePinnedToCore(
-        taskFunction,           // Función de la tarea
-        "DisplayTask",          // Nombre
-        DISPLAY_TASK_STACK,     // Stack size
-        nullptr,                // Parámetros
-        DISPLAY_TASK_PRIORITY,  // Prioridad baja (1)
-        &_taskHandle,           // Manejador
-        1                       // Core 1
+        taskFunction,           // Función que ejecutará la tarea
+        "DisplayTask",          // Nombre identificativo de la tarea
+        DISPLAY_TASK_STACK,     // Tamaño del stack en bytes (definido en config.h)
+        nullptr,                // Parámetros pasados a la tarea (ninguno)
+        DISPLAY_TASK_PRIORITY,  // Prioridad de la tarea (definida en config.h)
+        &_taskHandle,           // Handle para poder controlar la tarea después
+        1                       // Núcleo donde se ejecuta (núcleo 1)
     );
 }
 
 // ============================================================================
-// taskFunction() - Bucle principal de la tarea
+// taskFunction() - Bucle principal
 // ============================================================================
-
 void DisplayTask::taskFunction(void* pvParams) {
-    TickType_t lastWakeTime = xTaskGetTickCount();
-    SensorData newData;
-    DisplayAlert newAlert;
-    
+    TickType_t lastWakeTime = xTaskGetTickCount(); // Marca de tiempo para el ciclo periódico exacto
+    SensorData newData;   // Buffer temporal para recibir datos de sensores
+    DisplayCommand cmd;   // Buffer temporal para recibir comandos
+    Recommendation rec;   // Buffer temporal para recibir recomendaciones
+
     while (true) {
-        // 1. Recibir nuevos datos de sensores (no bloqueante)
+        // 1. Intentar recibir nuevos datos de sensores sin bloquear la tarea
         if (xQueueReceive(_sensorQueue, &newData, 0) == pdTRUE) {
-            _currentData = newData;
+            _currentData = newData;   // Actualizar los datos actuales si llegó algo nuevo
         }
-        
-        // 2. Recibir alertas (prioridad alta - se muestran inmediatamente)
-        if (xQueueReceive(_alertQueue, &newAlert, 0) == pdTRUE) {
-            showAlert(newAlert);
+
+        // 2. Intentar recibir un comando de inicio o fin de sesión sin bloquear
+        if (xQueueReceive(_cmdQueue, &cmd, 0) == pdTRUE) {
+            _sessionActive = cmd.sessionActive;   // Actualizar estado de sesión
+            if (!_sessionActive) {
+                // Sesión terminada: programar apagado de pantalla tras el tiempo definido
+                _sessionEndTime = millis() + DISPLAY_POST_SESSION_DURATION_MS;
+            } else {
+                // Sesión iniciada: encender pantalla si estaba apagada
+                if (!_displayOn) {
+                    _display.setPowerSave(0);   // Encender pantalla físicamente
+                    _displayOn = true;           // Actualizar flag de estado
+                }
+                _sessionEndTime = 0;    // Cancelar cualquier apagado pendiente
+                updateDisplay();        // Forzar actualización inmediata para mostrar el nuevo estado
+            }
         }
-        
-        // 3. Si la alerta ha expirado, volver a pantalla normal
-        if (_showingAlert && millis() > _alertEndTime) {
-            _showingAlert = false;
-            clearDisplay();
+
+        // 3. Intentar recibir una recomendación desde AlertTask (no bloqueante)
+        if (xQueueReceive(_recQueue, &rec, 0) == pdTRUE) {
+            _showingRec = true;                                                                        // Activar modo recomendación
+            _recEndTime = millis() + (rec.duration > 0 ? rec.duration : RECOMMENDATION_DURATION_MS);  // Calcular cuándo expira
+            strncpy(_currentRec, rec.message, 63);                                                    // Copiar mensaje
+            _currentRec[63] = '\0';                                                                   // Asegurar terminación nula
         }
-        
-        // 4. Actualizar pantalla
-        if (!_showingAlert) {
+
+        // 4. Comprobar si ha llegado el momento de apagar la pantalla tras la sesión
+        if (!_sessionActive && _sessionEndTime != 0 && millis() > _sessionEndTime) {
+            if (_displayOn) {
+                _display.setPowerSave(1);   // Apagar pantalla físicamente (modo ahorro de energía)
+                _displayOn = false;          // Actualizar flag de estado
+            }
+            _sessionEndTime = 0;   // Resetear para no volver a entrar en esta condición
+        }
+
+        // 5. Redibujar la pantalla solo si está encendida
+        if (_displayOn) {
             updateDisplay();
         }
-        
-        // 5. Esperar hasta el próximo ciclo (1 segundo)
+
+        // 6. Esperar hasta el siguiente ciclo respetando el intervalo exacto
         vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(DISPLAY_INTERVAL_MS));
     }
 }
 
 // ============================================================================
-// initOLED() - Inicializa la pantalla OLED SH1106
+// updateDisplay() - Dibuja todo en buffer y lo vuelca de golpe (sin parpadeo)
 // ============================================================================
-
-void DisplayTask::initOLED() {
-    delay(50);
-    
-    // Secuencia de inicialización SH1106
-    sendCommand(0xAE);  // Display OFF
-    
-    sendCommand(0xD5);  // Oscillator Frequency
-    sendCommand(0x80);
-    
-    sendCommand(0xA8);  // Multiplex ratio
-    sendCommand(0x3F);
-    
-    sendCommand(0xD3);  // Display offset
-    sendCommand(0x00);
-    
-    sendCommand(0x40);  // Start line
-    
-    sendCommand(0xAD);  // DC-DC On
-    sendCommand(0x8B);
-    
-    sendCommand(0x8D);  // Charge pump
-    sendCommand(0x14);
-    
-    sendCommand(0x20);  // Memory mode
-    sendCommand(0x00);
-    
-    sendCommand(0x21);  // Column address
-    sendCommand(0x00);
-    sendCommand(0x7F);
-    
-    sendCommand(0xB0);  // Page address
-    
-    sendCommand(0x81);  // Contrast
-    sendCommand(0x80);
-    
-    sendCommand(0xA4);  // Resume to RAM content
-    sendCommand(0xA6);  // Normal display
-    
-    sendCommand(0xAF);  // Display ON
-    
-    delay(50);
-}
-
-// ============================================================================
-// sendCommand() - Envía un comando I2C a la OLED
-// ============================================================================
-
-void DisplayTask::sendCommand(uint8_t cmd) {
-    Wire.beginTransmission(OLED_ADDR);
-    Wire.write(0x00);  // Co=0, D/C=0 (comando)
-    Wire.write(cmd);
-    Wire.endTransmission();
-    delay(1);
-}
-
-// ============================================================================
-// sendData() - Envía datos I2C a la OLED
-// ============================================================================
-
-void DisplayTask::sendData(uint8_t* data, int len) {
-    Wire.beginTransmission(OLED_ADDR);
-    Wire.write(0x40);  // Co=0, D/C=1 (datos)
-    for (int i = 0; i < len; i++) {
-        Wire.write(data[i]);
-    }
-    Wire.endTransmission();
-}
-
-// ============================================================================
-// clearDisplay() - Limpia toda la pantalla OLED
-// ============================================================================
-
-void DisplayTask::clearDisplay() {
-    // Limpiar todas las páginas (8 páginas para 64 pixeles)
-    for (int page = 0; page < OLED_PAGES; page++) {
-        sendCommand(0xB0 + page);  // Set page
-        sendCommand(0x00);          // Lower column
-        sendCommand(0x10);          // Higher column
-        
-        // Enviar 128 bytes de 0x00 (negro) para cada página
-        uint8_t clean[OLED_WIDTH];
-        memset(clean, 0, OLED_WIDTH);
-        sendData(clean, OLED_WIDTH);
-    }
-}
-
-// ============================================================================
-// writeLine() - Escribe texto en una línea de la pantalla
-// ============================================================================
-
-void DisplayTask::writeLine(int line, const char* text) {
-    if (line < 0 || line > 3) return;
-    
-    // Truncar texto a 21 caracteres
-    String str = String(text);
-    if (str.length() > OLED_CHARS_PER_LINE) {
-        str = str.substring(0, OLED_CHARS_PER_LINE);
-    }
-    
-    // Mostrar también por Serial para debug
-    Serial.printf("[OLED L%d] %s\n", line, text);
-    
-    // En implementación real con librería gráfica:
-    // display.setCursor(2, line * 16);
-    // display.print(str);
-}
-
-// ============================================================================
-// updateDisplay() - Actualiza la pantalla con datos normales
-// ============================================================================
-
 void DisplayTask::updateDisplay() {
-    char line0[22];
-    char line1[22];
-    char line2[22];
-    char line3[22];
-    
-    // Línea 0: CO2 y Temperatura
-    snprintf(line0, sizeof(line0), "CO2:%.0f T:%.1f", 
-             _currentData.co2, _currentData.temperature);
-    
-    // Línea 1: Humedad y Luz
-    snprintf(line1, sizeof(line1), "H:%.0f%% L:%.0f", 
-             _currentData.humidity, _currentData.light);
-    
-    // Línea 2: Estado ambiental
-    snprintf(line2, sizeof(line2), "ESTADO: %s", getStateString(_currentData.state));
-    
-    // Línea 3: Estado de sesión o IP
-    if (_sessionActive) {
-        int minutos = (millis() - _sessionStart) / 60000;
-        snprintf(line3, sizeof(line3), "SESION: %d min", minutos);
+    char buf[32];   // Buffer auxiliar para formatear cadenas con snprintf
+
+    _display.clearBuffer();   // Limpiar buffer en RAM (la pantalla física no cambia aún)
+
+    // --- Hora en esquina superior derecha (y=9, no baja con el resto) ---
+    unsigned long secs = millis() / 1000;   // Convertir milisegundos a segundos totales
+    snprintf(buf, sizeof(buf), "%02d:%02d", (int)(secs / 3600) % 24, (int)(secs / 60) % 60); // Formatear HH:MM
+    _display.setCursor(85, 9);   // Posición: esquina superior derecha
+    _display.print(buf);         // Imprimir la hora en el buffer
+
+    // --- Estado de calidad del ambiente (y=19) ---
+    _display.setCursor(5, 19);          // Posición: inicio de línea 2
+    _display.print("Estado: ");         // Etiqueta fija
+    _display.print(getQualityString()); // Resultado evaluado: "BUENO", "REGULAR" o "MALO"
+
+    // --- Concentración de CO2 (y=29) ---
+    snprintf(buf, sizeof(buf), "CO2: %.0f ppm", _currentData.co2); // Formatear sin decimales
+    _display.setCursor(5, 29);   // Posición: inicio de línea 3
+    _display.print(buf);         // Imprimir CO2 en el buffer
+
+    // --- Temperatura (y=39) ---
+    snprintf(buf, sizeof(buf), "Temp: %.1f C", _currentData.temperature); // Formatear con 1 decimal
+    _display.setCursor(5, 39);   // Posición: inicio de línea 4
+    _display.print(buf);         // Imprimir temperatura en el buffer
+
+    // --- Humedad relativa (y=49) ---
+    snprintf(buf, sizeof(buf), "Hum: %.0f %%", _currentData.humidity); // %% produce un % literal en snprintf
+    _display.setCursor(5, 49);   // Posición: inicio de línea 5
+    _display.print(buf);         // Imprimir humedad en el buffer
+
+    // --- Línea 6: recomendación activa O datos de luz/sesión (y=59) ---
+    if (_showingRec && millis() < _recEndTime) {
+        // Hay recomendación activa: mostrarla truncada a 21 chars (128px / 6px por carácter)
+        snprintf(buf, sizeof(buf), "%.21s", _currentRec);
+        _display.setCursor(5, 59);   // Posición: inicio de línea 6
+        _display.print(buf);         // Imprimir recomendación (truncada si es larga)
     } else {
-        snprintf(line3, sizeof(line3), "SISTEMA: ACTIVO");
+        _showingRec = false;   // Recomendación expirada, volver a datos normales
+        snprintf(buf, sizeof(buf), "Lux: %.0f   S:%s", _currentData.light, _sessionActive ? "ON " : "OFF"); // Lux y estado sesión
+        _display.setCursor(5, 59);   // Posición: inicio de línea 6
+        _display.print(buf);         // Imprimir luz y estado de sesión
     }
-    
-    // Limpiar y escribir
-    clearDisplay();
-    writeLine(0, line0);
-    writeLine(1, line1);
-    writeLine(2, line2);
-    writeLine(3, line3);
+
+    _display.sendBuffer();   // Volcar todo el buffer a la pantalla de golpe → sin parpadeo
 }
 
 // ============================================================================
-// showAlert() - Muestra una alerta temporal en pantalla
+// getQualityString() - Evalúa umbrales y devuelve texto de calidad
 // ============================================================================
+const char* DisplayTask::getQualityString() {
+    bool malo = false;     // Flag: algún parámetro supera el umbral crítico
+    bool regular = false;  // Flag: algún parámetro supera el umbral aceptable pero no el crítico
 
-void DisplayTask::showAlert(const DisplayAlert& alert) {
-    // Guardar que estamos mostrando una alerta
-    _showingAlert = true;
-    _alertEndTime = millis() + ALERT_DURATION_MS;
-    strcpy(_lastAlertMessage, alert.message);
-    
-    // Limpiar pantalla
-    clearDisplay();
-    
-    // Mostrar alerta según el tipo
-    if (strcmp(alert.type, "ALERTA") == 0) {
-        writeLine(0, "!!! ALERTA CRITICA !!!");
-        writeLine(1, alert.message);
-        writeLine(2, "");
-        writeLine(3, "ATENCION!");
-    }
-    else if (strcmp(alert.type, "RECOMENDACION") == 0) {
-        writeLine(0, "RECOMENDACION:");
-        writeLine(1, alert.message);
-        writeLine(2, "");
-        writeLine(3, "");
-    }
-    else {
-        writeLine(0, "NOTIFICACION:");
-        writeLine(1, alert.message);
-        writeLine(2, "");
-        writeLine(3, "");
-    }
-    
-    Serial.printf("[Display] Alerta: %s - %s\n", alert.type, alert.message);
-}
+    // Evaluar CO2: por encima de ACCEPTABLE_MAX es malo, por encima de GOOD_MAX es regular
+    if (_currentData.co2 > CO2_ACCEPTABLE_MAX) malo = true;
+    else if (_currentData.co2 > CO2_GOOD_MAX) regular = true;
 
-// ============================================================================
-// getStateString() - Convierte estado numérico a texto
-// ============================================================================
+    // Evaluar temperatura: fuera del rango aceptable es malo, fuera del bueno es regular
+    if (_currentData.temperature < TEMP_GOOD_MIN || _currentData.temperature > TEMP_ACCEPTABLE_MAX) malo = true;
+    else if (_currentData.temperature > TEMP_GOOD_MAX) regular = true;
 
-const char* DisplayTask::getStateString(int state) {
-    switch (state) {
-        case 0: return "OPTIMO";
-        case 1: return "REGULAR";
-        case 2: return "CRITICO";
-        default: return "DESCONOCIDO";
-    }
+    // Evaluar humedad: fuera del rango aceptable es malo, en zona intermedia es regular
+    if (_currentData.humidity < HUM_ACCEPTABLE_MIN1 || _currentData.humidity > HUM_ACCEPTABLE_MAX2) malo = true;
+    else if ((_currentData.humidity >= HUM_ACCEPTABLE_MIN1 && _currentData.humidity < HUM_GOOD_MIN) ||
+             (_currentData.humidity > HUM_GOOD_MAX && _currentData.humidity <= HUM_ACCEPTABLE_MAX2)) regular = true;
+
+    // Evaluar luz: por encima de ACCEPTABLE_MAX es malo, por encima de GOOD_MAX es regular
+    if (_currentData.light >= LIGHT_ACCEPTABLE_MAX) malo = true;
+    else if (_currentData.light >= LIGHT_GOOD_MAX) regular = true;
+
+    // Devolver el peor estado encontrado (malo tiene prioridad sobre regular)
+    if (malo) return "MALO";
+    if (regular) return "REGULAR";
+    return "BUENO";   // Si ningún flag se activó, la calidad es buena
 }

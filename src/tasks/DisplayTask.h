@@ -1,96 +1,46 @@
-// ============================================================================
-// DisplayTask.h - Tarea de visualización OLED (Prioridad BAJA)
-// ============================================================================
-// Funciones: Muestra datos ambientales, estado del sistema, alertas,
-// recomendaciones y estado de sesiones en pantalla OLED SH1106
-// Comunicación: Recibe datos de SensorTask y alertas de AlertTask
-// Prioridad: BAJA (1) - Solo visualización, no crítica
-// ============================================================================
-
 #ifndef DISPLAY_TASK_H
 #define DISPLAY_TASK_H
 
-#include <Arduino.h>
-#include <Wire.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/queue.h>
-#include "DataStructures.h"
+#include <Arduino.h>                      // Base de Arduino (Serial, millis, etc.)
+#include <U8g2lib.h>                     // Librería para OLED (SH1106)
+#include <Wire.h>                        // Comunicación I2C
+#include <freertos/task.h>               // Tareas FreeRTOS
+#include <freertos/queue.h>              // Colas FreeRTOS
+#include "SensorTask.h"                  // Estructura SensorData (CO2, temp, hum, luz)
+#include "AlertTask.h"                   // Estructura Recommendation (para recibir recomendaciones) ← NUEVO
 
-// El resto de tu código sigue igual...
-// ============================================================================
-// CLASE DISPLAY TASK
-// ============================================================================
+// Comando que puede recibir la DisplayTask (inicio/fin sesión)
+struct DisplayCommand {
+    bool sessionActive;                  // true = iniciar sesión, false = finalizar
+};
 
 class DisplayTask {
 public:
-    // ------------------------------------------------------------------------
-    // start() - Inicia la tarea de display
-    // Recibe:
-    //   - sensorQueue: cola de donde recibe los datos de sensores
-    //   - alertQueue: cola de donde recibe las alertas/recomendaciones
-    // ------------------------------------------------------------------------
-    static void start(QueueHandle_t sensorQueue, QueueHandle_t alertQueue);
-    
+    // Inicia la tarea: recibe cola de sensores, cola de comandos y cola de recomendaciones ← MODIFICADO
+    static void start(QueueHandle_t sensorQueue, QueueHandle_t cmdQueue, QueueHandle_t recQueue);
+
 private:
-    // ------------------------------------------------------------------------
-    // taskFunction() - Bucle principal de la tarea FreeRTOS
-    // ------------------------------------------------------------------------
-    static void taskFunction(void* pvParams);
-    
-    // ------------------------------------------------------------------------
-    // initOLED() - Inicializa la pantalla OLED SH1106
-    // ------------------------------------------------------------------------
-    static void initOLED();
-    
-    // ------------------------------------------------------------------------
-    // clearDisplay() - Limpia toda la pantalla OLED
-    // ------------------------------------------------------------------------
-    static void clearDisplay();
-    
-    // ------------------------------------------------------------------------
-    // sendCommand() - Envía un comando I2C a la OLED
-    // ------------------------------------------------------------------------
-    static void sendCommand(uint8_t cmd);
-    
-    // ------------------------------------------------------------------------
-    // sendData() - Envía datos I2C a la OLED
-    // ------------------------------------------------------------------------
-    static void sendData(uint8_t* data, int len);
-    
-    // ------------------------------------------------------------------------
-    // writeLine() - Escribe texto en una línea de la pantalla
-    // Líneas: 0, 1, 2, 3 (máximo 21 caracteres por línea)
-    // ------------------------------------------------------------------------
-    static void writeLine(int line, const char* text);
-    
-    // ------------------------------------------------------------------------
-    // updateDisplay() - Actualiza la pantalla con datos normales
-    // ------------------------------------------------------------------------
-    static void updateDisplay();
-    
-    // ------------------------------------------------------------------------
-    // showAlert() - Muestra una alerta temporal en pantalla
-    // ------------------------------------------------------------------------
-    static void showAlert(const DisplayAlert& alert);
-    
-    // ------------------------------------------------------------------------
-    // getStateString() - Convierte estado numérico a texto
-    // ------------------------------------------------------------------------
-    static const char* getStateString(int state);
-    
-    // ------------------------------------------------------------------------
-    // Miembros estáticos
-    // ------------------------------------------------------------------------
-    static TaskHandle_t _taskHandle;      // Manejador de la tarea
-    static QueueHandle_t _sensorQueue;    // Cola para recibir datos de sensores
-    static QueueHandle_t _alertQueue;     // Cola para recibir alertas
-    
-    static SensorData _currentData;       // Últimos datos recibidos
-    static bool _showingAlert;            // Si se está mostrando una alerta
-    static unsigned long _alertEndTime;   // Cuándo termina de mostrar la alerta
-    static char _lastAlertMessage[64];    // Último mensaje de alerta
-    static bool _sessionActive;           // Estado de sesión (desde fuera)
-    static unsigned long _sessionStart;   // Inicio de sesión
+    static TaskHandle_t _taskHandle;      // Manejador de la tarea FreeRTOS
+    static QueueHandle_t _sensorQueue;    // Cola donde llegan los datos de SensorTask
+    static QueueHandle_t _cmdQueue;       // Cola donde llegan comandos (inicio/fin sesión)
+    static QueueHandle_t _recQueue;       // Cola donde llegan recomendaciones desde AlertTask ← NUEVO
+
+    // Objeto de la pantalla OLED SH1106 (I2C hardware)
+    static U8G2_SH1106_128X64_NONAME_F_HW_I2C _display;
+
+    static SensorData _currentData;       // Últimos datos recibidos del sensor
+    static bool _sessionActive;           // Estado actual de la sesión (ON/OFF)
+    static unsigned long _sessionEndTime; // Momento (ms) para apagar pantalla tras finalizar sesión
+    static bool _displayOn;               // Estado real de la pantalla (encendida/apagada)
+
+    // Variables para mostrar recomendaciones temporales ← NUEVO
+    static bool _showingRec;              // Indica si se está mostrando una recomendación
+    static unsigned long _recEndTime;     // Momento (ms) en que termina de mostrarse
+    static char _currentRec[64];          // Texto de la recomendación actual
+
+    static void taskFunction(void* pvParams);   // Bucle principal de la tarea
+    static void updateDisplay();                // Dibuja la información actual en la OLED
+    static const char* getQualityString();      // Retorna "OPTIMO", "ACEPTABLE" o "DESFAVORABLE"
 };
 
-#endif // DISPLAY_TASK_H
+#endif
