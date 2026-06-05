@@ -70,6 +70,13 @@ void AlertTask::taskFunction(void* pvParams) {
 
             if (_sessionActive) {
                 _sessionStartTime = millis();   // Marcar inicio de sesión
+                
+                // =========================================================
+                // PARCHE: Esperar 100ms para que StorageTask tenga tiempo 
+                // de sumar +1 al _sessionCounter antes de leerlo.
+                // =========================================================
+                vTaskDelay(pdMS_TO_TICKS(100));
+
                 createAlertsFile();             // Crear archivo JSON de alertas
                 setLedState(0);                 // LED verde al iniciar sesión
                 Serial.println("[Alert] Sesion iniciada");
@@ -184,13 +191,22 @@ void AlertTask::closeAlertsFile() {
 }
 
 // ============================================================================
-// saveAlertToSD() - Guarda una alerta en el archivo JSON
+// saveAlertToSD() - Guarda una alerta en el archivo JSON (CORREGIDO)
 // ============================================================================
 void AlertTask::saveAlertToSD(const char* type, const char* message) {
-    if (!_alertsFileOpen || !_alertsFile) return;
+    if (!_alertsFileOpen || !_alertsFile || _sessionCounter == nullptr) return;
 
+    // Controlamos el reinicio de la primera alerta usando el número de sesión
+    static unsigned long lastSessionId = 999999;
     static bool firstAlert = true;
 
+    // Si ha cambiado el número de sesión, reiniciamos el flag de la primera alerta
+    if (lastSessionId != *_sessionCounter) {
+        firstAlert = true;
+        lastSessionId = *_sessionCounter;
+    }
+
+    // Solo ponemos coma si NO es la primera alerta de ESTA sesión
     if (!firstAlert) {
         _alertsFile.println(",");
     }

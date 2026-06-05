@@ -1,5 +1,8 @@
+
+
 #ifndef WEB_SERVER_TASK_H
 #define WEB_SERVER_TASK_H
+
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -12,20 +15,22 @@
 #include "SensorTask.h"
 #include "../SessionManager.h"
 
+
 class WebServerTask {
 public:
     static void start();
     static void updateCurrentData(const SensorData &data);
+
 
 private:
     static TaskHandle_t _taskHandle;
     static WebServer server;
     static SensorData _currentData;
     static SemaphoreHandle_t _dataMutex;
-    
+   
     static void setupAccessPoint();
     static void taskFunction(void* pvParams);
-    
+   
     static void handleRoot();
     static void handleApiStatus();
     static void handleApiSession();
@@ -35,5 +40,6 @@ private:
     static void handleApiSessionData();
     static void handleNotFound();
 };
+
 
 #endif
