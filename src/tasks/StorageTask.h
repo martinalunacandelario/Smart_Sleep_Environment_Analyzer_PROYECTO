@@ -14,11 +14,7 @@ public:
     // Inicia la tarea: recibe cola de sensores y cola de comandos de sesión
     static void start(QueueHandle_t sensorQueue, QueueHandle_t cmdQueue);
 
-    // ============================================================================
-    // NUEVO: Devuelve puntero al contador de sesiones para que otras tareas
-    // (como AlertTask y AnalysisTask) puedan usarlo y así nombrar sus archivos
-    // con el mismo número de sesión (session_001_stats.json, session_001_alerts.json)
-    // ============================================================================
+    // Devuelve puntero al contador de sesiones para que otras tareas
     static unsigned long* getSessionCounterPtr();
 
 private:

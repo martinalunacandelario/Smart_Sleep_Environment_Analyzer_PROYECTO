@@ -1,5 +1,6 @@
 #include "AnalysisTask.h"
 #include "../../include/config.h"
+#include "../../lib/drivers/NTPManager.h"
 #include <SPI.h>
 #include <SD.h>
 
@@ -39,6 +40,12 @@ void AnalysisTask::taskFunction(void* pvParams) {
             if (!cmd.sessionActive && _sessionCounter != nullptr) {
                 Serial.println("[Analysis] Fin de sesión detectado. Analizando datos...");
                 
+                // ================================================================
+                // FIX: ESPERAR A QUE STORAGETASK TERMINE DE CERRAR EL ARCHIVO
+                // ================================================================
+                Serial.println("[Analysis] Esperando 2 segundos para que StorageTask cierre el archivo...");
+                vTaskDelay(pdMS_TO_TICKS(2000));
+                
                 String filename = getLastSessionFileName();
                 
                 if (filename.length() > 0) {
@@ -52,11 +59,9 @@ void AnalysisTask::taskFunction(void* pvParams) {
                         stats.interpretation = getInterpretation(stats.sleepScore);
                         saveStatisticsToSD(stats);
                         
-                        // Mostrar resumen por Serial
                         Serial.println("\n[Analysis] ====== RESUMEN DE LA SESIÓN ======");
                         Serial.printf("Sesión #%lu\n", stats.sessionId);
                         
-                        // Duración en horas y minutos
                         unsigned long horas = stats.duration / 3600;
                         unsigned long minutos = (stats.duration % 3600) / 60;
                         Serial.printf("Duración: %lu h %lu min\n", horas, minutos);
@@ -71,8 +76,21 @@ void AnalysisTask::taskFunction(void* pvParams) {
                                       stats.light_avg, stats.light_max, stats.light_min, stats.light_score);
                         Serial.printf("\nSLEEP SCORE: %d/100 - %s\n", stats.sleepScore, stats.interpretation.c_str());
                         
-                        if (stats.bestHourStart > 0 || stats.bestHourEnd > 0) {
-                            Serial.printf("Mejor franja: %lu:%02lu - %lu:%02lu\n", 
+                        // --- Mejor franja horaria: distingue datos insuficientes ---
+                        if (!stats.bestHourValid) {
+                            Serial.println("Mejor franja: No se puede determinar la franja debido al poco tiempo de la sesion");
+                        } else if (NTPManager::isTimeSynced() && stats.sessionStartEpoch > 0) {
+                            struct tm startTm, endTm;
+                            time_t startTime = stats.bestHourStart;
+                            time_t endTime = stats.bestHourEnd;
+                            localtime_r(&startTime, &startTm);
+                            localtime_r(&endTime, &endTm);
+                            
+                            Serial.printf("Mejor franja (hora real): %02d:%02d - %02d:%02d\n", 
+                                          startTm.tm_hour, startTm.tm_min,
+                                          endTm.tm_hour, endTm.tm_min);
+                        } else {
+                            Serial.printf("Mejor franja (relativa): %lu:%02lu - %lu:%02lu\n", 
                                           stats.bestHourStart / 60, stats.bestHourStart % 60,
                                           stats.bestHourEnd / 60, stats.bestHourEnd % 60);
                         }
@@ -90,7 +108,7 @@ void AnalysisTask::taskFunction(void* pvParams) {
 }
 
 // ============================================================================
-// getLastSessionFileName() - Obtiene la RUTA COMPLETA del archivo CSV de la última sesión
+// getLastSessionFileName() - Obtiene la RUTA COMPLETA del archivo CSV
 // ============================================================================
 String AnalysisTask::getLastSessionFileName() {
     if (_sessionCounter == nullptr) return "";
@@ -109,7 +127,6 @@ String AnalysisTask::getLastSessionFileName() {
         snprintf(searchPattern, sizeof(searchPattern), "session_%03lu", *_sessionCounter);
         
         if (name.indexOf(searchPattern) >= 0 && name.endsWith(".csv")) {
-            // Devolver la RUTA COMPLETA, no solo el nombre
             targetFile = String(SD_BASE_PATH) + "/" + name;
             break;
         }
@@ -121,7 +138,10 @@ String AnalysisTask::getLastSessionFileName() {
 }
 
 // ============================================================================
-// readSessionFile() - Lee el archivo CSV y guarda los datos en vectores
+// readSessionFile() - Lee el archivo CSV y guarda los datos
+// FIX: ahora también parsea "# Hora de fin:" que está al FINAL del archivo
+// (footer escrito por closeSessionFile() en StorageTask), no solo en la
+// cabecera. Antes ese footer se descartaba con un continue().
 // ============================================================================
 bool AnalysisTask::readSessionFile(const String& filename, SessionStats &stats) {
     File file = SD.open(filename.c_str(), FILE_READ);
@@ -130,16 +150,55 @@ bool AnalysisTask::readSessionFile(const String& filename, SessionStats &stats) 
         return false;
     }
     
+    // Inicializar variables de fecha/hora
+    stats.sessionStartEpoch = 0;
+    stats.date = "";
+    stats.startTime = "";
+    stats.endTime = "";
+    
+    // --- Bucle 1: cabecera (antes de los datos) ---
+    while (file.available()) {
+        String line = file.readStringUntil('\n');
+        line.trim();
+        
+        if (line.startsWith("# Fecha:")) {
+            stats.date = line.substring(8);
+            stats.date.trim();
+        } else if (line.startsWith("# Hora de inicio:")) {
+            stats.startTime = line.substring(17);
+            stats.startTime.trim();
+        } else if (line.startsWith("# Timestamp de inicio (epoch):")) {
+            stats.sessionStartEpoch = line.substring(29).toInt();
+        } else if (line.startsWith("timestamp_ms")) {
+            break;   // fin de cabecera, empiezan los datos
+        }
+    }
+    
+    if (stats.date == "") stats.date = "Sin fecha";
+    if (stats.startTime == "") stats.startTime = "Sin hora";
+    
     stats.timestamps.clear();
     stats.co2_values.clear();
     stats.temp_values.clear();
     stats.hum_values.clear();
     stats.light_values.clear();
     
+    // --- Bucle 2: filas de datos + footer ("# Hora de fin:" al final) ---
     while (file.available()) {
         String line = file.readStringUntil('\n');
+        line.trim();
         
-        if (line.length() == 0 || line.startsWith("#")) continue;
+        if (line.length() == 0) continue;
+        
+        // FIX: parsear el footer en vez de descartarlo
+        if (line.startsWith("#")) {
+            if (line.startsWith("# Hora de fin:")) {
+                stats.endTime = line.substring(14);
+                stats.endTime.trim();
+            }
+            continue;
+        }
+        
         if (line.startsWith("timestamp_ms")) continue;
         
         int idx1 = line.indexOf(',');
@@ -163,6 +222,8 @@ bool AnalysisTask::readSessionFile(const String& filename, SessionStats &stats) 
     }
     file.close();
     
+    if (stats.endTime == "") stats.endTime = "Sin hora";
+    
     if (stats.timestamps.empty()) {
         Serial.println("[Analysis] No hay datos en el archivo");
         return false;
@@ -185,7 +246,6 @@ bool AnalysisTask::readSessionFile(const String& filename, SessionStats &stats) 
 void AnalysisTask::calculateStatistics(SessionStats &stats) {
     if (stats.co2_values.empty()) return;
     
-    // CO2
     stats.co2_min = stats.co2_values[0];
     stats.co2_max = stats.co2_values[0];
     float co2_sum = 0;
@@ -197,7 +257,6 @@ void AnalysisTask::calculateStatistics(SessionStats &stats) {
     stats.co2_avg = co2_sum / stats.co2_values.size();
     stats.co2_score = calculateCO2Score(stats.co2_avg);
     
-    // Temperatura
     stats.temp_min = stats.temp_values[0];
     stats.temp_max = stats.temp_values[0];
     float temp_sum = 0;
@@ -209,7 +268,6 @@ void AnalysisTask::calculateStatistics(SessionStats &stats) {
     stats.temp_avg = temp_sum / stats.temp_values.size();
     stats.temp_score = calculateTempScore(stats.temp_avg);
     
-    // Humedad
     stats.hum_min = stats.hum_values[0];
     stats.hum_max = stats.hum_values[0];
     float hum_sum = 0;
@@ -221,7 +279,6 @@ void AnalysisTask::calculateStatistics(SessionStats &stats) {
     stats.hum_avg = hum_sum / stats.hum_values.size();
     stats.hum_score = calculateHumidityScore(stats.hum_avg);
     
-    // Luz
     stats.light_min = stats.light_values[0];
     stats.light_max = stats.light_values[0];
     float light_sum = 0;
@@ -294,19 +351,31 @@ String AnalysisTask::getInterpretation(int score) {
 }
 
 // ============================================================================
-// findBestHour() - Encuentra la mejor franja horaria de 1 hora
+// findBestHour() - Encuentra la mejor franja horaria
+// Requiere un mínimo de 1 HORA de datos (MIN_SAMPLES_FOR_BESTHOUR muestras)
+// para considerar el resultado fiable. Si no hay suficientes datos,
+// bestHourValid queda en false y NO se inventa ninguna franja.
 // ============================================================================
 void AnalysisTask::findBestHour(SessionStats &stats) {
-    if (stats.timestamps.size() < 2) {
+    // --- Comprobación de datos mínimos (1 hora) ---
+    if ((int)stats.timestamps.size() < MIN_SAMPLES_FOR_BESTHOUR) {
+        Serial.printf("[Analysis] Sesion demasiado corta para calcular franja (%d muestras, se necesitan %d para 1h)\n",
+                      (int)stats.timestamps.size(), MIN_SAMPLES_FOR_BESTHOUR);
         stats.bestHourStart = 0;
         stats.bestHourEnd = 0;
+        stats.bestHourValid = false;
         return;
     }
-    
-    int windowSize = 2;
+
+    int windowSize = 120;   // ventana de referencia: 120 muestras = 1 hora (con 30s/muestra)
+    if ((int)stats.timestamps.size() < windowSize) {
+        windowSize = stats.timestamps.size() / 2;
+    }
+    if (windowSize < 2) windowSize = 2;
+
     int bestIndex = 0;
     float bestScore = -1;
-    
+
     for (int i = 0; i <= (int)stats.timestamps.size() - windowSize; i++) {
         float windowScore = 0;
         for (int j = 0; j < windowSize; j++) {
@@ -315,14 +384,14 @@ void AnalysisTask::findBestHour(SessionStats &stats) {
             float temp = stats.temp_values[i + j];
             float hum = stats.hum_values[i + j];
             float light = stats.light_values[i + j];
-            
+
             if (co2 > 900) score += (co2 - 900) / 100;
             if (temp < 18) score += (18 - temp) * 2;
             if (temp > 22) score += (temp - 22) * 2;
             if (hum < 40) score += (40 - hum);
             if (hum > 60) score += (hum - 60);
             if (light > 5) score += (light - 5);
-            
+
             windowScore += score;
         }
         if (bestScore < 0 || windowScore < bestScore) {
@@ -330,16 +399,24 @@ void AnalysisTask::findBestHour(SessionStats &stats) {
             bestIndex = i;
         }
     }
-    
+
     if (bestIndex >= 0 && bestIndex + windowSize - 1 < (int)stats.timestamps.size()) {
         stats.bestHourStart = stats.timestamps[bestIndex] / 1000;
         stats.bestHourEnd = stats.timestamps[bestIndex + windowSize - 1] / 1000;
-        if (stats.bestHourEnd < stats.bestHourStart + 3600) {
-            stats.bestHourEnd = stats.bestHourStart + 3600;
+
+        // Ya NO se fuerza artificialmente a 1 hora: con el filtro de arriba,
+        // siempre habrá al menos 1h real de datos detrás de esta ventana.
+
+        if (NTPManager::isTimeSynced() && stats.sessionStartEpoch > 0) {
+            stats.bestHourStart = stats.sessionStartEpoch + stats.bestHourStart;
+            stats.bestHourEnd = stats.sessionStartEpoch + stats.bestHourEnd;
         }
+
+        stats.bestHourValid = true;
     } else {
         stats.bestHourStart = 0;
         stats.bestHourEnd = 0;
+        stats.bestHourValid = false;
     }
 }
 
@@ -361,6 +438,9 @@ void AnalysisTask::saveStatisticsToSD(const SessionStats &stats) {
     statsFile.printf("  \"duration\": %lu,\n", stats.duration);
     statsFile.printf("  \"sleepScore\": %d,\n", stats.sleepScore);
     statsFile.printf("  \"interpretation\": \"%s\",\n", stats.interpretation.c_str());
+    statsFile.printf("  \"date\": \"%s\",\n", stats.date.c_str());
+    statsFile.printf("  \"startTime\": \"%s\",\n", stats.startTime.c_str());
+    statsFile.printf("  \"endTime\": \"%s\",\n", stats.endTime.c_str());
     
     statsFile.println("  \"co2\": {");
     statsFile.printf("    \"avg\": %.0f,\n", stats.co2_avg);
@@ -390,9 +470,34 @@ void AnalysisTask::saveStatisticsToSD(const SessionStats &stats) {
     statsFile.printf("    \"score\": %d\n", stats.light_score);
     statsFile.println("  },");
     
+    // --- Mejor franja horaria: incluye "valid" y "message" ---
     statsFile.println("  \"bestHour\": {");
-    statsFile.printf("    \"start\": %lu,\n", stats.bestHourStart);
-    statsFile.printf("    \"end\": %lu\n", stats.bestHourEnd);
+    if (!stats.bestHourValid) {
+        statsFile.println("    \"valid\": false,");
+        statsFile.println("    \"message\": \"No se puede determinar la franja debido al poco tiempo de la sesion\"");
+    } else if (NTPManager::isTimeSynced() && stats.sessionStartEpoch > 0 && stats.bestHourStart > 1000000000) {
+        statsFile.println("    \"valid\": true,");
+        statsFile.printf("    \"start\": %lu,\n", stats.bestHourStart);
+        statsFile.printf("    \"end\": %lu,\n", stats.bestHourEnd);
+        
+        struct tm startTm, endTm;
+        time_t startTime = stats.bestHourStart;
+        time_t endTime = stats.bestHourEnd;
+        localtime_r(&startTime, &startTm);
+        localtime_r(&endTime, &endTm);
+        
+        char startStr[16], endStr[16];
+        strftime(startStr, sizeof(startStr), "%H:%M", &startTm);
+        strftime(endStr, sizeof(endStr), "%H:%M", &endTm);
+        statsFile.printf("    \"display\": \"%s - %s\"\n", startStr, endStr);
+    } else {
+        statsFile.println("    \"valid\": true,");
+        statsFile.printf("    \"start\": %lu,\n", stats.bestHourStart);
+        statsFile.printf("    \"end\": %lu,\n", stats.bestHourEnd);
+        statsFile.printf("    \"display\": \"%02lu:%02lu - %02lu:%02lu\"\n",
+                         stats.bestHourStart / 60, stats.bestHourStart % 60,
+                         stats.bestHourEnd / 60, stats.bestHourEnd % 60);
+    }
     statsFile.println("  }");
     
     statsFile.println("}");

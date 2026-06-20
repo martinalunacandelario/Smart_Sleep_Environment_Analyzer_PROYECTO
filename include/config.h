@@ -2,7 +2,7 @@
 #define CONFIG_H
 
 // ============================================================
-// PINES I2C (compartidos por SCD41, BH1750 y OLED)
+// PINES I2C (compartidos por SCD41, BH1750, OLED y RTC)
 // ============================================================
 #define I2C_SDA     21        // Pin SDA para bus I2C (datos)
 #define I2C_SCL     22        // Pin SCL para bus I2C (reloj)
@@ -119,5 +119,21 @@
 #define AP_PASSWORD             "12345678"              // Contraseña (mínimo 8 caracteres)
 #define AP_CHANNEL              6                       // Canal WiFi (1-11)
 #define AP_HIDDEN               false                   // Red visible (false = visible)
+
+// ============================================================================
+// CONFIGURACIÓN DE RED (STA) - PARA NTP (Hora real desde Internet)
+// ============================================================================
+// 👇 AQUÍ PONES LOS DATOS DE TU MÓVIL O WiFi
+#define WIFI_SSID               "Manuel's Galaxy A32"          
+#define WIFI_PASSWORD           "febl0767"      
+
+// ============================================================================
+// CONFIGURACIÓN NTP (Hora real desde Internet)
+// ============================================================================
+#define NTP_SERVER1             "pool.ntp.org"
+#define NTP_SERVER2             "time.google.com"
+#define NTP_SERVER3             "time.windows.com"
+#define TIMEZONE_OFFSET         3600                    // UTC+1 (España invierno) ✅
+#define DAYLIGHT_OFFSET         3600                    // 1 hora de cambio horario
 
 #endif // CONFIG_H

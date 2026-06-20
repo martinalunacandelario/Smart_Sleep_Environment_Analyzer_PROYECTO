@@ -1,5 +1,6 @@
 #include "AlertTask.h"
 #include "../../include/config.h"
+#include "../../lib/drivers/NTPManager.h"  
 #include <SPI.h>
 #include <SD.h>
 
@@ -28,22 +29,17 @@ void AlertTask::start(QueueHandle_t sensorQueue,
     _sensorQueue     = sensorQueue;
     _recQueue        = recQueue;
     _sessionCounter  = sessionCounter;
-    _cmdQueue        = cmdQueue;        // Cola propia para comandos de sesión
+    _cmdQueue        = cmdQueue;
 
-    // Configurar pines del LED RGB como salida
     pinMode(LED_RED_PIN,    OUTPUT);
     pinMode(LED_GREEN_PIN,  OUTPUT);
     pinMode(LED_YELLOW_PIN, OUTPUT);
-
-    // Configurar pin del buzzer como salida
     pinMode(BUZZER_PIN, OUTPUT);
 
-    // Apagar todos los LEDs al inicio
     digitalWrite(LED_RED_PIN,    LOW);
     digitalWrite(LED_GREEN_PIN,  LOW);
     digitalWrite(LED_YELLOW_PIN, LOW);
 
-    // Crear tarea FreeRTOS en el núcleo 1
     xTaskCreatePinnedToCore(
         taskFunction,
         "AlertTask",
@@ -61,28 +57,20 @@ void AlertTask::start(QueueHandle_t sensorQueue,
 void AlertTask::taskFunction(void* pvParams) {
     SensorData   data;
     AlertCommand cmd;
-    static int lastState = -1;  // Variable para recordar el último estado (depuración)
+    static int lastState = -1;
 
     while (true) {
-        // 1. Comprobar si ha llegado un comando de inicio o fin de sesión
         if (xQueueReceive(_cmdQueue, &cmd, 0) == pdTRUE) {
             _sessionActive = cmd.sessionActive;
 
             if (_sessionActive) {
-                _sessionStartTime = millis();   // Marcar inicio de sesión
-                
-                // =========================================================
-                // PARCHE: Esperar 100ms para que StorageTask tenga tiempo 
-                // de sumar +1 al _sessionCounter antes de leerlo.
-                // =========================================================
+                _sessionStartTime = millis();
                 vTaskDelay(pdMS_TO_TICKS(100));
-
-                createAlertsFile();             // Crear archivo JSON de alertas
-                setLedState(0);                 // LED verde al iniciar sesión
+                createAlertsFile();
+                setLedState(0);
                 Serial.println("[Alert] Sesion iniciada");
             } else {
-                closeAlertsFile();              // Cerrar archivo JSON
-                // Apagar todos los LEDs al finalizar sesión
+                closeAlertsFile();
                 digitalWrite(LED_RED_PIN,    LOW);
                 digitalWrite(LED_GREEN_PIN,  LOW);
                 digitalWrite(LED_YELLOW_PIN, LOW);
@@ -90,14 +78,9 @@ void AlertTask::taskFunction(void* pvParams) {
             }
         }
 
-        // 2. Solo procesar datos y activar alertas si la sesión está activa
         if (_sessionActive && xQueueReceive(_sensorQueue, &data, 0) == pdTRUE) {
-            // Evaluar estado global (0=Verde, 1=Amarillo, 2=Rojo)
             int globalState = getGlobalState(data);
 
-            // ============================================================
-            // DEPURACIÓN: Mostrar cambio de estado en el monitor serie
-            // ============================================================
             if (globalState != lastState) {
                 const char* estadoTexto;
                 switch (globalState) {
@@ -110,23 +93,19 @@ void AlertTask::taskFunction(void* pvParams) {
                 lastState = globalState;
             }
 
-            // Controlar LED RGB según el estado
             setLedState(globalState);
 
-            // Si el estado es crítico: sonar alarma y enviar recomendación
             if (globalState == 2) {
                 playAlarm();
 
                 const char* rec = getRecommendation(data);
                 if (rec != nullptr) {
-                    // Enviar recomendación a DisplayTask
                     Recommendation recom;
                     strncpy(recom.message, rec, sizeof(recom.message) - 1);
                     recom.message[sizeof(recom.message) - 1] = '\0';
                     recom.duration = RECOMMENDATION_DURATION_MS;
                     xQueueSend(_recQueue, &recom, 0);
 
-                    // Determinar tipo de alerta para el JSON
                     const char* type = "";
                     if      (getCo2State(data.co2) == 2)         type = "CO2";
                     else if (getTempState(data.temperature) == 2) type = "Temperatura";
@@ -138,15 +117,24 @@ void AlertTask::taskFunction(void* pvParams) {
             }
         }
 
-        // Pausa para no saturar la CPU
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
 // ============================================================================
-// getCurrentTimeString() - Hora desde inicio de sesión en formato HH:MM
+// getCurrentTimeString() - Obtiene la hora actual (REAL o relativa)
 // ============================================================================
 String AlertTask::getCurrentTimeString() {
+    // ================================================================
+    // USAR HORA REAL DESDE NTP SI ESTÁ DISPONIBLE
+    // ================================================================
+    if (NTPManager::isTimeSynced()) {
+        return NTPManager::getCurrentTime();  // "HH:MM:SS"
+    }
+    
+    // ================================================================
+    // FALLBACK: Tiempo desde inicio de sesión
+    // ================================================================
     unsigned long elapsed = (millis() - _sessionStartTime) / 1000;
     unsigned long horas   = elapsed / 3600;
     unsigned long minutos = (elapsed % 3600) / 60;
@@ -191,28 +179,25 @@ void AlertTask::closeAlertsFile() {
 }
 
 // ============================================================================
-// saveAlertToSD() - Guarda una alerta en el archivo JSON (CORREGIDO)
+// saveAlertToSD() - Guarda una alerta en el archivo JSON
 // ============================================================================
 void AlertTask::saveAlertToSD(const char* type, const char* message) {
     if (!_alertsFileOpen || !_alertsFile || _sessionCounter == nullptr) return;
 
-    // Controlamos el reinicio de la primera alerta usando el número de sesión
     static unsigned long lastSessionId = 999999;
     static bool firstAlert = true;
 
-    // Si ha cambiado el número de sesión, reiniciamos el flag de la primera alerta
     if (lastSessionId != *_sessionCounter) {
         firstAlert = true;
         lastSessionId = *_sessionCounter;
     }
 
-    // Solo ponemos coma si NO es la primera alerta de ESTA sesión
     if (!firstAlert) {
         _alertsFile.println(",");
     }
     firstAlert = false;
 
-    String timeStr       = getCurrentTimeString();
+    String timeStr = getCurrentTimeString();
     unsigned long elapsed = millis() - _sessionStartTime;
 
     _alertsFile.printf("    {\n");
@@ -223,7 +208,7 @@ void AlertTask::saveAlertToSD(const char* type, const char* message) {
     _alertsFile.printf("    }");
     _alertsFile.flush();
 
-    Serial.printf("[Alert] Alerta guardada: %s - %s\n", type, message);
+    Serial.printf("[Alert] Alerta guardada: %s - %s (Hora: %s)\n", type, message, timeStr.c_str());
 }
 
 // ============================================================================
@@ -289,28 +274,25 @@ void AlertTask::setLedState(int state) {
     digitalWrite(LED_YELLOW_PIN, LOW);
 
     switch (state) {
-        case 0: digitalWrite(LED_GREEN_PIN,  HIGH); break;  // Óptimo → Verde
-        case 1: digitalWrite(LED_YELLOW_PIN, HIGH); break;  // Regular → Amarillo
-        case 2: digitalWrite(LED_RED_PIN,    HIGH); break;  // Crítico → Rojo
+        case 0: digitalWrite(LED_GREEN_PIN,  HIGH); break;
+        case 1: digitalWrite(LED_YELLOW_PIN, HIGH); break;
+        case 2: digitalWrite(LED_RED_PIN,    HIGH); break;
     }
 }
 
 // ============================================================================
-// playAlarm() - Melodía: intro simpática + alerta urgente + cierre
-// Usa vTaskDelay en lugar de delay() para no bloquear otras tareas del núcleo
+// playAlarm() - Melodía de alarma
 // ============================================================================
 void AlertTask::playAlarm() {
-    // --- Intro ascendente (estilo videojuego) ---
-    tone(BUZZER_PIN, 523);  vTaskDelay(pdMS_TO_TICKS(150));  // Do5
+    tone(BUZZER_PIN, 523);  vTaskDelay(pdMS_TO_TICKS(150));
     noTone(BUZZER_PIN);     vTaskDelay(pdMS_TO_TICKS(40));
-    tone(BUZZER_PIN, 659);  vTaskDelay(pdMS_TO_TICKS(150));  // Mi5
+    tone(BUZZER_PIN, 659);  vTaskDelay(pdMS_TO_TICKS(150));
     noTone(BUZZER_PIN);     vTaskDelay(pdMS_TO_TICKS(40));
-    tone(BUZZER_PIN, 784);  vTaskDelay(pdMS_TO_TICKS(150));  // Sol5
+    tone(BUZZER_PIN, 784);  vTaskDelay(pdMS_TO_TICKS(150));
     noTone(BUZZER_PIN);     vTaskDelay(pdMS_TO_TICKS(40));
-    tone(BUZZER_PIN, 1047); vTaskDelay(pdMS_TO_TICKS(300));  // Do6 (nota larga)
+    tone(BUZZER_PIN, 1047); vTaskDelay(pdMS_TO_TICKS(300));
     noTone(BUZZER_PIN);     vTaskDelay(pdMS_TO_TICKS(150));
 
-    // --- Alerta urgente (dos pares de pitidos agudos) ---
     for (int i = 0; i < 2; i++) {
         tone(BUZZER_PIN, 1800); vTaskDelay(pdMS_TO_TICKS(180));
         noTone(BUZZER_PIN);     vTaskDelay(pdMS_TO_TICKS(60));
@@ -318,9 +300,8 @@ void AlertTask::playAlarm() {
         noTone(BUZZER_PIN);     vTaskDelay(pdMS_TO_TICKS(60));
     }
 
-    // --- Cierre: nota de resolución ---
     vTaskDelay(pdMS_TO_TICKS(100));
-    tone(BUZZER_PIN, 880);  vTaskDelay(pdMS_TO_TICKS(400));  // La5
+    tone(BUZZER_PIN, 880);  vTaskDelay(pdMS_TO_TICKS(400));
     noTone(BUZZER_PIN);
 }
 

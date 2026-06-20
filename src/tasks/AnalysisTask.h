@@ -1,80 +1,85 @@
 #ifndef ANALYSIS_TASK_H
 #define ANALYSIS_TASK_H
 
-#include <Arduino.h>                     // Funciones básicas de Arduino (Serial, millis, etc.)
-#include <SPI.h>                         // Bus SPI (para leer la tarjeta SD)
-#include <SD.h>                          // Librería para manejar la tarjeta SD
-#include <freertos/task.h>               // Tareas FreeRTOS
-#include <freertos/queue.h>              // Colas FreeRTOS
-#include <vector>                        // Vector de C++ para almacenar listas de datos
-#include "DisplayTask.h"                 // Para DisplayCommand (comandos de sesión)
+#include <Arduino.h>
+#include <SPI.h>
+#include <SD.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
+#include <vector>
+#include "DisplayTask.h"
 
-// Estructura que almacena todas las estadísticas de una sesión
+// ============================================================================
+// Mínimo de muestras necesarias para calcular una "mejor franja" fiable.
+// Con SENSOR_INTERVAL_MS = 30000 (30s/muestra): 120 muestras = 1 hora real.
+// Si cambias el intervalo de muestreo en config.h, recalcula este valor:
+//   MIN_SAMPLES_FOR_BESTHOUR = 3600000 / SENSOR_INTERVAL_MS
+// ============================================================================
+#define MIN_SAMPLES_FOR_BESTHOUR 120
+
 struct SessionStats {
-    unsigned long sessionId;             // Número de sesión (1, 2, 3...)
-    unsigned long startTimestamp;        // Timestamp de inicio (ms desde inicio del ESP32)
-    unsigned long duration;              // Duración de la sesión en segundos
+    unsigned long sessionId;
+    unsigned long startTimestamp;
+    unsigned long duration;
     
-    // --- CO2 ---
-    float co2_avg, co2_max, co2_min;     // Media, máximo y mínimo de CO2 (ppm)
-    int co2_score;                       // Puntuación parcial (0-40 puntos)
+    // ================================================================
+    // FECHA Y HORA (necesarias para NTP)
+    // ================================================================
+    String date;                    // "2024-01-15"
+    String startTime;               // "14:30:00"
+    String endTime;                 // "15:45:00"
+    unsigned long sessionStartEpoch; // Segundos desde 1970
     
-    // --- Temperatura ---
-    float temp_avg, temp_max, temp_min;  // Media, máximo y mínimo de temperatura (°C)
-    int temp_score;                      // Puntuación parcial (0-25 puntos)
+    float co2_avg, co2_max, co2_min;
+    int co2_score;
     
-    // --- Humedad ---
-    float hum_avg, hum_max, hum_min;     // Media, máximo y mínimo de humedad (%)
-    int hum_score;                       // Puntuación parcial (0-20 puntos)
+    float temp_avg, temp_max, temp_min;
+    int temp_score;
     
-    // --- Luz ---
-    float light_avg, light_max, light_min; // Media, máximo y mínimo de luz (lux)
-    int light_score;                     // Puntuación parcial (0-15 puntos)
+    float hum_avg, hum_max, hum_min;
+    int hum_score;
     
-    // --- Sleep Score ---
-    int sleepScore;                      // Puntuación total (0-100 puntos)
-    String interpretation;               // Texto interpretativo (ej: "Condiciones optimas")
+    float light_avg, light_max, light_min;
+    int light_score;
     
-    // --- Mejor franja horaria ---
-    unsigned long bestHourStart;         // Inicio de la mejor hora (segundos desde inicio)
-    unsigned long bestHourEnd;           // Fin de la mejor hora (segundos desde inicio)
+    int sleepScore;
+    String interpretation;
     
-    // --- Datos para el timeline (vectores) - se usan durante el cálculo y luego se descartan ---
-    std::vector<unsigned long> timestamps;  // Lista de timestamps (ms)
-    std::vector<float> co2_values;          // Lista de valores de CO2
-    std::vector<float> temp_values;         // Lista de valores de temperatura
-    std::vector<float> hum_values;          // Lista de valores de humedad
-    std::vector<float> light_values;        // Lista de valores de luz
+    unsigned long bestHourStart;
+    unsigned long bestHourEnd;
+    bool bestHourValid;   // true si hay datos suficientes (>= MIN_SAMPLES_FOR_BESTHOUR)
+    
+    std::vector<unsigned long> timestamps;
+    std::vector<float> co2_values;
+    std::vector<float> temp_values;
+    std::vector<float> hum_values;
+    std::vector<float> light_values;
 };
 
 class AnalysisTask {
 public:
-    // Inicia la tarea: recibe cola de comandos y puntero al contador de sesiones
     static void start(QueueHandle_t cmdQueue, unsigned long* sessionCounter);
 
 private:
-    static TaskHandle_t _taskHandle;          // Manejador de la tarea FreeRTOS
-    static QueueHandle_t _cmdQueue;           // Cola para recibir comandos de sesión
-    static unsigned long* _sessionCounter;    // Puntero al contador de sesiones (lo comparte con StorageTask)
+    static TaskHandle_t _taskHandle;
+    static QueueHandle_t _cmdQueue;
+    static unsigned long* _sessionCounter;
     
-    static void taskFunction(void* pvParams); // Función principal de la tarea
+    static void taskFunction(void* pvParams);
     
-    // --- Funciones de lectura y análisis ---
-    static bool readSessionFile(const String& filename, SessionStats &stats); // Lee el CSV
-    static void calculateStatistics(SessionStats &stats);                     // Calcula medias, máx, min
-    static void findBestHour(SessionStats &stats);                            // Encuentra mejor franja horaria
-    static void saveStatisticsToSD(const SessionStats &stats);                // Guarda JSON con resultados
+    static bool readSessionFile(const String& filename, SessionStats &stats);
+    static void calculateStatistics(SessionStats &stats);
+    static void findBestHour(SessionStats &stats);
+    static void saveStatisticsToSD(const SessionStats &stats);
     
-    // --- Funciones de cálculo del Sleep Score (según la tabla del proyecto) ---
-    static int calculateCO2Score(float co2_avg);      // Puntuación CO2 (0-40)
-    static int calculateTempScore(float temp_avg);    // Puntuación temperatura (0-25)
-    static int calculateHumidityScore(float hum_avg); // Puntuación humedad (0-20)
-    static int calculateLightScore(float light_avg);  // Puntuación luz (0-15)
-    static int calculateSleepScore(SessionStats &stats); // Suma total (0-100)
-    static String getInterpretation(int score);       // Texto según puntuación
+    static int calculateCO2Score(float co2_avg);
+    static int calculateTempScore(float temp_avg);
+    static int calculateHumidityScore(float hum_avg);
+    static int calculateLightScore(float light_avg);
+    static int calculateSleepScore(SessionStats &stats);
+    static String getInterpretation(int score);
     
-    // Función auxiliar para obtener el nombre del archivo de la última sesión
     static String getLastSessionFileName();
 };
 
-#endif // ANALYSIS_TASK_H
+#endif

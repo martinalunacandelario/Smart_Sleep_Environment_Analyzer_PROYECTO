@@ -1,5 +1,6 @@
 #include "WebServerTask.h"
 #include "../../include/config.h"
+#include "../../lib/drivers/NTPManager.h"  // <-- CAMBIADO
 #include <ArduinoJson.h>
 #include <SD.h>
 
@@ -25,7 +26,6 @@ static String sdBasename(const char* fullPath) {
 
 // ============================================================================
 // HTML, CSS y JS alojado en memoria FLASH (PROGMEM)
-// Chart.js se carga desde la SD, no desde PROGMEM
 // ============================================================================
 const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <html lang="es">
@@ -33,7 +33,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Sleep Environment Analyzer</title>
-<!-- Chart.js servido desde la tarjeta SD (NO desde la flash del ESP32) -->
 <script src="/chart.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -241,20 +240,22 @@ var _pollTimer = null;
 var _pollErrors = 0;
 var _lastStatus = null;
 
-// ============================================================================
-// VARIABLES PARA EL CONTROL DE ZOOM EN GRÁFICAS
-// ============================================================================
-var _rangeStart = 0;      // Índice de inicio del rango mostrado
-var _rangeEnd = -1;       // Índice final (-1 = todos los datos)
-var _timeline = null;     // Almacena los datos del timeline (CSV)
-var _zoomPoints = 0;      // Número de puntos por ventana de zoom (0 = todos)
-var _viewOffset = 0;      // Desplazamiento para navegación por páginas
+var _rangeStart = 0;
+var _rangeEnd = -1;
+var _timeline = null;
+var _zoomPoints = 0;
+var _viewOffset = 0;
 
 function tickClock() {
   var now = new Date();
   var pad = function(n){ return String(n).padStart(2,'0'); };
-  document.getElementById('info_time').textContent = pad(now.getHours())+':'+pad(now.getMinutes())+':'+pad(now.getSeconds());
-  document.getElementById('info_date').textContent = pad(now.getDate())+'/'+pad(now.getMonth()+1)+'/'+now.getFullYear();
+  var timeEl = document.getElementById('info_time');
+  var dateEl = document.getElementById('info_date');
+  
+  if (timeEl && !timeEl.dataset.ntpSynced) {
+    timeEl.textContent = pad(now.getHours())+':'+pad(now.getMinutes())+':'+pad(now.getSeconds());
+    dateEl.textContent = pad(now.getDate())+'/'+pad(now.getMonth()+1)+'/'+now.getFullYear();
+  }
 }
 setInterval(tickClock, 1000);
 tickClock();
@@ -277,6 +278,22 @@ async function pollStatus() {
     document.getElementById('temp_val').textContent = d.temperature !== undefined ? d.temperature.toFixed(1) : '--';
     document.getElementById('hum_val').textContent = d.humidity !== undefined ? Math.round(d.humidity) : '--';
     document.getElementById('light_val').textContent = d.light !== undefined ? Math.round(d.light) : '--';
+    
+    var timeEl = document.getElementById('info_time');
+    var dateEl = document.getElementById('info_date');
+    
+    if (d.ntpSynced) {
+      timeEl.textContent = d.ntpTime || '--:--:--';
+      dateEl.textContent = d.ntpDate || '--';
+      timeEl.dataset.ntpSynced = 'true';
+    } else {
+      var now = new Date();
+      var pad = function(n){ return String(n).padStart(2,'0'); };
+      timeEl.textContent = pad(now.getHours())+':'+pad(now.getMinutes())+':'+pad(now.getSeconds());
+      dateEl.textContent = pad(now.getDate())+'/'+pad(now.getMonth()+1)+'/'+now.getFullYear();
+      timeEl.dataset.ntpSynced = 'false';
+    }
+    
     var eb = document.getElementById('env_badge');
     eb.className = 'badge';
     var st = d.status || 'DESCONOCIDO';
@@ -348,7 +365,7 @@ async function loadLists() {
              + '<div class="rn-wrap '+nc+'">'+(i+1)+'</div>'
              + '<div class="si-info">'
              + '<div class="si-title">Sesión #'+s.id+'</div>'
-             + '<div class="si-sub">'+fmtDur(s.duration)+(s.date?' · '+s.date:'')+'</div>'
+             + '<div class="si-sub">'+(s.date || '--')+' · '+fmtDur(s.duration)+'</div>'
              + '</div>'
              + '<span class="sp '+pc+'">'+(s.sleepScore!==undefined?s.sleepScore:'--')+'</span>'
              + '</div>';
@@ -361,7 +378,7 @@ async function loadLists() {
       hHtml += '<div class="si" onclick="showDetail('+s.id+')">'
              + '<div class="si-info">'
              + '<div class="si-title">Sesión #'+s.id+'</div>'
-             + '<div class="si-sub">'+fmtDur(s.duration)+(s.date?' · '+s.date:'')+'</div>'
+             + '<div class="si-sub">'+(s.date || '--')+' · '+fmtDur(s.duration)+'</div>'
              + '</div>'
              + '<span class="sp '+pc+'">'+(s.sleepScore!==undefined?s.sleepScore:'--')+'</span>'
              + '</div>';
@@ -370,9 +387,6 @@ async function loadLists() {
   } catch(e){ console.error('[loadLists]',e); }
 }
 
-// ============================================================================
-// FUNCIÓN PARA ACTUALIZAR LAS GRÁFICAS CON EL RANGO ACTUAL
-// ============================================================================
 function updateCharts() {
     if (!_timeline || !_timeline.timestamps || _timeline.timestamps.length === 0) {
         document.querySelectorAll('.tab-content').forEach(function(el){ 
@@ -385,18 +399,15 @@ function updateCharts() {
     var startIdx = _rangeStart;
     var endIdx = _rangeEnd;
     
-    // Si _rangeEnd === -1, mostrar todos los datos
     if (endIdx === -1) {
         startIdx = 0;
         endIdx = total;
     }
     
-    // Asegurar que los índices están dentro del rango
     if (startIdx < 0) startIdx = 0;
     if (endIdx > total) endIdx = total;
     if (endIdx <= startIdx) { startIdx = 0; endIdx = total; }
     
-    // Crear arrays filtrados
     var labels = [];
     var co2Data = [];
     var tempData = [];
@@ -415,7 +426,6 @@ function updateCharts() {
         lightData.push(_timeline.light[i]);
     }
     
-    // Actualizar información del rango
     var info = document.getElementById('rangeInfo');
     if (info) {
         if (_zoomPoints === 0) {
@@ -425,13 +435,9 @@ function updateCharts() {
         }
     }
     
-    // Destruir gráficas anteriores
     Object.values(_charts).forEach(function(c){ if(c) { try { c.destroy(); } catch(e){} } });
     _charts = {};
     
-    // ============================================================================
-    // FUNCIÓN PARA CREAR UNA GRÁFICA CON CHART.JS
-    // ============================================================================
     function mkChart(id, label, data, color, unit) {
         var canvas = document.getElementById(id);
         if (!canvas) return null;
@@ -531,13 +537,11 @@ function updateCharts() {
         }
     }
     
-    // Crear las 4 gráficas
     _charts.co2 = mkChart('ch-co2', 'CO₂ (ppm)', co2Data, '#a393e8', 'ppm');
     _charts.temp = mkChart('ch-temp', 'Temperatura (°C)', tempData, '#f07b50', '°C');
     _charts.hum = mkChart('ch-hum', 'Humedad (%)', humData, '#50c8a0', '%');
     _charts.light = mkChart('ch-light', 'Luz (lux)', lightData, '#f0c040', 'lux');
     
-    // Habilitar/deshabilitar botones de navegación
     var prevBtn = document.getElementById('navPrev');
     var nextBtn = document.getElementById('navNext');
     if (prevBtn && nextBtn) {
@@ -550,9 +554,6 @@ function updateCharts() {
     }
 }
 
-// ============================================================================
-// FUNCIÓN PARA CAMBIAR DE PESTAÑA
-// ============================================================================
 function switchTab(tab, event) {
     document.querySelectorAll('.tab-content').forEach(function(el){ el.classList.remove('active'); });
     document.querySelectorAll('.tab-btn').forEach(function(el){ el.classList.remove('active'); });
@@ -561,20 +562,13 @@ function switchTab(tab, event) {
     setTimeout(function(){ if(_charts[tab]) { try { _charts[tab].resize(); } catch(e){} } }, 80);
 }
 
-// ============================================================================
-// FUNCIÓN PARA APLICAR ZOOM POR HORAS
-// ============================================================================
 function setZoomHours(hours, btn) {
-    // Si hours = 0, mostrar todos los datos
     if (hours === 0) {
         _zoomPoints = 0;
         _rangeStart = 0;
         _rangeEnd = -1;
         _viewOffset = 0;
     } else {
-        // Calcular cuántos puntos hay en X horas
-        // Asumiendo que cada punto es ~30 segundos (SENSOR_INTERVAL_MS = 30000)
-        // 1 hora = 3600 segundos / 30 segundos = 120 puntos
         var pointsPerHour = 120;
         _zoomPoints = hours * pointsPerHour;
         _rangeStart = 0;
@@ -582,19 +576,14 @@ function setZoomHours(hours, btn) {
         _viewOffset = 0;
     }
     
-    // Actualizar botones
     document.querySelectorAll('.chart-zoom-btn').forEach(function(b) {
         b.classList.remove('active');
     });
     if (btn) btn.classList.add('active');
     
-    // Actualizar gráfica
     updateCharts();
 }
 
-// ============================================================================
-// FUNCIÓN PARA NAVEGAR ENTRE FRANJAS DE ZOOM
-// ============================================================================
 function navigateZoom(direction) {
     if (_zoomPoints === 0 || !_timeline) return;
     
@@ -603,7 +592,6 @@ function navigateZoom(direction) {
     
     _viewOffset += direction * _zoomPoints;
     
-    // Limitar el desplazamiento
     if (_viewOffset < 0) _viewOffset = 0;
     if (_viewOffset > maxOffset) _viewOffset = maxOffset;
     
@@ -616,9 +604,6 @@ function navigateZoom(direction) {
 function closeModal() { document.getElementById('session-modal').classList.remove('open'); }
 document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeModal(); });
 
-// ============================================================================
-// showDetail() - Muestra los detalles de una sesión
-// ============================================================================
 async function showDetail(sid) {
   document.getElementById('modal-body').innerHTML='<div class="spinner">Cargando datos de la sesión...</div>';
   document.getElementById('session-modal').classList.add('open');
@@ -689,11 +674,6 @@ async function showDetail(sid) {
       +'<div class="sb"><h3>Mejor franja horaria detectada</h3><div class="best-hour">'+bestHour+'</div></div>'
       +'<div class="sb"><h3>Recomendaciones generadas</h3>'+recsHtml+'</div>';
 
-    // ==========================================
-    // GRÁFICAS INTERACTIVAS CON CHART.JS
-    // ==========================================
-    
-    // Extraer datos del CSV
     _timeline = { 
         timestamps: [], 
         co2: [], 
@@ -726,11 +706,7 @@ async function showDetail(sid) {
         }
     }
     
-    // Verificar que hay datos
     if (_timeline.timestamps && _timeline.timestamps.length > 1) {
-        // ========================================================================
-        // CONTROLES DE ZOOM: 1h, 2h, 3h, 4h, 6h, 8h, Todo + flechas de navegación
-        // ========================================================================
         var zoomHtml = '<div style="display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">' +
             '<span style="color:#8880a0; font-size:12px;">📊 Zoom:</span>' +
             '<button class="tab-btn chart-zoom-btn" onclick="setZoomHours(1,this)">1h</button>' +
@@ -751,13 +727,11 @@ async function showDetail(sid) {
             tabContainer.insertAdjacentHTML('beforebegin', zoomHtml);
         }
         
-        // Resetear rango
         _zoomPoints = 0;
         _rangeStart = 0;
         _rangeEnd = -1;
         _viewOffset = 0;
         
-        // Generar gráficas
         updateCharts();
     } else {
         document.querySelectorAll('.tab-content').forEach(function(el){ 
@@ -786,7 +760,7 @@ void WebServerTask::start() {
     _dataMutex = xSemaphoreCreateMutex();
     setupAccessPoint();
     server.on("/", handleRoot);
-    server.on("/chart.min.js", handleChartJs);  // Ruta para servir Chart.js desde SD
+    server.on("/chart.min.js", handleChartJs);
     server.on("/api/status", handleApiStatus);
     server.on("/api/session", HTTP_POST, handleApiSession);
     server.on("/api/sessions", handleApiSessions);
@@ -825,17 +799,22 @@ void WebServerTask::updateCurrentData(const SensorData &data) {
     }
 }
 
+// ============================================================================
+// handleApiStatus() - Devuelve el estado actual en JSON con hora NTP
+// ============================================================================
 void WebServerTask::handleApiStatus() {
     SensorData snap = {0};
     if (_dataMutex && xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         snap = _currentData;
         xSemaphoreGive(_dataMutex);
     }
-    StaticJsonDocument<320> doc;
+    
+    StaticJsonDocument<512> doc;
     doc["co2"] = snap.co2;
     doc["temperature"] = snap.temperature;
     doc["humidity"] = snap.humidity;
     doc["light"] = snap.light;
+    
     String status = "DESCONOCIDO";
     if (snap.co2 > 0) {
         bool malo = false, regular = false;
@@ -853,10 +832,25 @@ void WebServerTask::handleApiStatus() {
     }
     doc["status"] = status;
     doc["sessionActive"] = SessionManager::isSessionActive();
-    unsigned long secs = millis() / 1000;
-    char timeStr[12];
-    sprintf(timeStr, "%02d:%02d:%02d", (int)(secs / 3600) % 24, (int)(secs / 60) % 60, (int)(secs % 60));
-    doc["uptime"] = timeStr;
+    
+    // ================================================================
+    // AÑADIR HORA Y FECHA REAL DESDE NTP
+    // ================================================================
+    if (NTPManager::isTimeSynced()) {
+        doc["ntpTime"] = NTPManager::getCurrentTime();
+        doc["ntpDate"] = NTPManager::getCurrentDate();
+        doc["ntpDateTime"] = NTPManager::getCurrentDateTime();
+        doc["ntpSynced"] = true;
+    } else {
+        doc["ntpSynced"] = false;
+        unsigned long secs = millis() / 1000;
+        char timeStr[12];
+        sprintf(timeStr, "%02d:%02d:%02d", (int)(secs / 3600) % 24, (int)(secs / 60) % 60, (int)(secs % 60));
+        doc["ntpTime"] = timeStr;
+        doc["ntpDate"] = "Sin NTP";
+        doc["ntpDateTime"] = "Sin NTP";
+    }
+    
     String response;
     serializeJson(doc, response);
     server.send(200, "application/json", response);
@@ -1058,24 +1052,15 @@ void WebServerTask::handleRoot() {
 // ============================================================================
 // handleChartJs() - Sirve Chart.js desde la tarjeta SD
 // ============================================================================
-// Esta función lee el archivo chart.min.js desde la raíz de la tarjeta SD
-// y lo envía al navegador. De esta forma, no ocupa memoria FLASH del ESP32.
-// ============================================================================
 void WebServerTask::handleChartJs() {
-    // Intentar abrir el archivo chart.min.js desde la raíz de la SD
     File chartFile = SD.open("/chart.min.js", FILE_READ);
     
-    // Si no se encuentra el archivo, devolver error 404
     if (!chartFile) {
         Serial.println("[Web] ERROR: chart.min.js no encontrado en la SD");
         server.send(404, "text/plain", "404: chart.min.js no encontrado en la SD");
         return;
     }
     
-    // Enviar el archivo al navegador como JavaScript
     server.streamFile(chartFile, "application/javascript");
     chartFile.close();
-    
-    // Log opcional para depuración (descomentar si se necesita)
-    // Serial.println("[Web] chart.min.js servido desde la SD");
 }
