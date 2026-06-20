@@ -1,5 +1,3 @@
-
-
 #ifndef WEB_SERVER_TASK_H
 #define WEB_SERVER_TASK_H
 
@@ -39,6 +37,11 @@ private:
     static void handleApiSessionAlerts();
     static void handleApiSessionData();
     static void handleNotFound();
+   
+    // ========================================================================
+    // NUEVA: Sirve Chart.js desde la memoria FLASH del ESP32
+    // ========================================================================
+    static void handleChartJs();
 };
 
 

@@ -1,8 +1,15 @@
+// ============================================================================
+// WebServerTask.cpp - CON CHART.JS SERVIDO DESDE LA SD
+// ============================================================================
+// DESCRIPCIÓN: Servidor web con gráficas Chart.js servido desde la SD.
+//              El archivo chart.min.js se lee desde la tarjeta SD,
+//              liberando ~120KB de memoria FLASH del ESP32.
+// ============================================================================
+
 #include "WebServerTask.h"
 #include "../../include/config.h"
 #include <ArduinoJson.h>
 #include <SD.h>
-
 
 // ============================================================================
 // INICIALIZACIÓN DE MIEMBROS ESTÁTICOS
@@ -11,7 +18,6 @@ TaskHandle_t      WebServerTask::_taskHandle  = nullptr;
 WebServer         WebServerTask::server(WEB_SERVER_PORT);
 SensorData        WebServerTask::_currentData = {0};
 SemaphoreHandle_t WebServerTask::_dataMutex   = nullptr;
-
 
 // ============================================================================
 // FUNCIÓN HELPER - Extrae solo el nombre del archivo sin path
@@ -25,9 +31,9 @@ static String sdBasename(const char* fullPath) {
     return s;
 }
 
-
 // ============================================================================
 // HTML, CSS y JS alojado en memoria FLASH (PROGMEM)
+// Chart.js se carga desde la SD, no desde PROGMEM
 // ============================================================================
 const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <html lang="es">
@@ -35,9 +41,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Sleep Environment Analyzer</title>
-<!-- CHART.JS COMENTADO PARA PRUEBA 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
--->
+<!-- Chart.js servido desde la tarjeta SD (NO desde la flash del ESP32) -->
+<script src="/chart.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f0c1a;color:#e8e6f0;min-height:100vh;padding:20px}
@@ -242,7 +247,13 @@ canvas{max-height:180px;width:100%!important}
 var _charts = {};
 var _pollTimer = null;
 var _pollErrors = 0;
-var _lastStatus = null;  
+var _lastStatus = null;
+
+// Variables para el control de zoom en gráficas
+var _rangeStart = 0;
+var _rangeEnd = -1;  // -1 = todos los datos
+var _timeline = null;  // Almacena los datos del timeline
+
 function tickClock() {
   var now = new Date();
   var pad = function(n){ return String(n).padStart(2,'0'); };
@@ -251,12 +262,15 @@ function tickClock() {
 }
 setInterval(tickClock, 1000);
 tickClock();
+
 function spClass(s){ return s>=80?'sp-good':s>=60?'sp-mid':'sp-low'; }
+
 function fmtDur(secs){
   if(!secs) return '--';
   var h=Math.floor(secs/3600), m=Math.floor((secs%3600)/60);
   return h>0?h+'h '+m+'min':m+'min';
 }
+
 async function pollStatus() {
   try {
     var r = await fetch('/api/status',{cache:'no-store'});
@@ -302,6 +316,7 @@ async function pollStatus() {
     }
   }
 }
+
 async function startSession() {
   try {
     var r = await fetch('/api/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionActive:true})});
@@ -309,6 +324,7 @@ async function startSession() {
     if (d.success) { pollStatus(); }
   } catch(e){}
 }
+
 async function stopSession() {
   try {
     var r = await fetch('/api/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionActive:false})});
@@ -316,6 +332,7 @@ async function stopSession() {
     if (d.success) { setTimeout(loadLists, 1500); pollStatus(); }
   } catch(e){}
 }
+
 async function loadLists() {
   try {
     var r = await fetch('/api/sessions',{cache:'no-store'});
@@ -356,6 +373,190 @@ async function loadLists() {
     document.getElementById('history-list').innerHTML = hHtml;
   } catch(e){ console.error('[loadLists]',e); }
 }
+
+// ============================================================================
+// FUNCIÓN PARA ACTUALIZAR LAS GRÁFICAS CON EL RANGO ACTUAL
+// ============================================================================
+function updateCharts() {
+    if (!_timeline || !_timeline.timestamps || _timeline.timestamps.length === 0) {
+        document.querySelectorAll('.tab-content').forEach(function(el){ 
+            el.innerHTML = '<div class="empty">No hay datos para mostrar</div>';
+        });
+        return;
+    }
+    
+    var total = _timeline.timestamps.length;
+    var startIdx = _rangeStart < 0 ? total + _rangeStart : _rangeStart;
+    var endIdx = _rangeEnd < 0 ? total + _rangeEnd : _rangeEnd;
+    
+    if (startIdx < 0) startIdx = 0;
+    if (endIdx > total) endIdx = total;
+    if (endIdx <= startIdx) { startIdx = 0; endIdx = total; }
+    
+    // Crear arrays filtrados
+    var labels = [];
+    var co2Data = [];
+    var tempData = [];
+    var humData = [];
+    var lightData = [];
+    
+    for (var i = startIdx; i < endIdx; i++) {
+        var ts = _timeline.timestamps[i];
+        var sec = Math.floor(ts / 1000);
+        var h = Math.floor(sec / 3600) % 24;
+        var m = Math.floor(sec / 60) % 60;
+        labels.push(String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'));
+        co2Data.push(_timeline.co2[i]);
+        tempData.push(_timeline.temperature[i]);
+        humData.push(_timeline.humidity[i]);
+        lightData.push(_timeline.light[i]);
+    }
+    
+    // Actualizar información del rango
+    var info = document.getElementById('rangeInfo');
+    if (info) {
+        info.textContent = 'Mostrando ' + (endIdx - startIdx) + ' de ' + total + ' datos';
+    }
+    
+    // Destruir gráficas anteriores
+    Object.values(_charts).forEach(function(c){ if(c) { try { c.destroy(); } catch(e){} } });
+    _charts = {};
+    
+    // ============================================================================
+    // FUNCIÓN PARA CREAR UNA GRÁFICA CON CHART.JS
+    // ============================================================================
+    function mkChart(id, label, data, color, unit) {
+        var canvas = document.getElementById(id);
+        if (!canvas) return null;
+        
+        if (!data || data.length < 2) {
+            canvas.parentElement.innerHTML = 
+                '<div class="empty">Datos insuficientes para gráfica</div>';
+            return null;
+        }
+        
+        var ctx = canvas.getContext('2d');
+        
+        try {
+            return new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: label,
+                        data: data,
+                        borderColor: color,
+                        backgroundColor: color + '33',
+                        borderWidth: 2,
+                        pointRadius: 2,
+                        pointHoverRadius: 6,
+                        pointBackgroundColor: color,
+                        pointBorderColor: '#ffffff',
+                        pointBorderWidth: 1,
+                        fill: true,
+                        tension: 0.2,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    animation: false,
+                    legend: {
+                        labels: {
+                            fontColor: '#8880a0',
+                            fontSize: 11
+                        }
+                    },
+                    tooltips: {
+                        backgroundColor: 'rgba(15, 12, 26, 0.92)',
+                        titleFontColor: '#e8e6f0',
+                        bodyFontColor: '#c8c4d8',
+                        borderColor: 'rgba(255,255,255,0.1)',
+                        borderWidth: 1,
+                        cornerRadius: 8,
+                        callbacks: {
+                            title: function(tooltipItems) {
+                                var idx = tooltipItems[0].index + startIdx;
+                                if (idx >= _timeline.timestamps.length) return '';
+                                var ts = _timeline.timestamps[idx];
+                                var sec = Math.floor(ts / 1000);
+                                var h = Math.floor(sec / 3600) % 24;
+                                var m = Math.floor(sec / 60) % 60;
+                                var s = Math.floor(sec % 60);
+                                return 'Tiempo: ' + 
+                                    String(h).padStart(2, '0') + ':' + 
+                                    String(m).padStart(2, '0') + ':' + 
+                                    String(s).padStart(2, '0');
+                            },
+                            label: function(tooltipItem) {
+                                return label + ': ' + tooltipItem.yLabel.toFixed(1) + ' ' + (unit || '');
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: {
+                                fontColor: '#8880a0',
+                                fontSize: 9,
+                                maxRotation: 45,
+                                autoSkip: true,
+                                maxTicksLimit: 20
+                            },
+                            grid: {
+                                color: 'rgba(255,255,255,0.05)'
+                            }
+                        },
+                        y: {
+                            ticks: {
+                                fontColor: '#8880a0',
+                                fontSize: 9
+                            },
+                            grid: {
+                                color: 'rgba(255,255,255,0.05)'
+                            }
+                        }
+                    }
+                }
+            });
+        } catch(e) {
+            console.error('Error creando gráfica ' + id, e);
+            return null;
+        }
+    }
+    
+    // Crear las 4 gráficas
+    _charts.co2 = mkChart('ch-co2', 'CO₂ (ppm)', co2Data, '#a393e8', 'ppm');
+    _charts.temp = mkChart('ch-temp', 'Temperatura (°C)', tempData, '#f07b50', '°C');
+    _charts.hum = mkChart('ch-hum', 'Humedad (%)', humData, '#50c8a0', '%');
+    _charts.light = mkChart('ch-light', 'Luz (lux)', lightData, '#f0c040', 'lux');
+}
+
+// ============================================================================
+// FUNCIÓN PARA CAMBIAR EL RANGO DE ZOOM
+// ============================================================================
+function setRange(start, end) {
+    _rangeStart = start;
+    _rangeEnd = end;
+    updateCharts();
+}
+
+// ============================================================================
+// FUNCIÓN PARA CAMBIAR DE PESTAÑA
+// ============================================================================
+function switchTab(tab, event) {
+    document.querySelectorAll('.tab-content').forEach(function(el){ el.classList.remove('active'); });
+    document.querySelectorAll('.tab-btn').forEach(function(el){ el.classList.remove('active'); });
+    document.getElementById('tab-'+tab).classList.add('active');
+    if (event && event.target) event.target.classList.add('active');
+    setTimeout(function(){ if(_charts[tab]) { try { _charts[tab].resize(); } catch(e){} } }, 80);
+}
+
+function closeModal() { document.getElementById('session-modal').classList.remove('open'); }
+document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeModal(); });
+
+// ============================================================================
+// showDetail() - Muestra los detalles de una sesión
+// ============================================================================
 async function showDetail(sid) {
   document.getElementById('modal-body').innerHTML='<div class="spinner">Cargando datos de la sesión...</div>';
   document.getElementById('session-modal').classList.add('open');
@@ -369,7 +570,6 @@ async function showDetail(sid) {
     var stats = await results[0].json();
     var alerts = await results[1].json();
     var csvText = await results[2].text();
-
 
     var pc = spClass(stats.sleepScore||0);
     var scoreColor = pc==='sp-good'?'#a4d65e':pc==='sp-mid'?'#f0b94a':'#f07070';
@@ -427,55 +627,70 @@ async function showDetail(sid) {
       +'<div class="sb"><h3>Mejor franja horaria detectada</h3><div class="best-hour">'+bestHour+'</div></div>'
       +'<div class="sb"><h3>Recomendaciones generadas</h3>'+recsHtml+'</div>';
 
-
     // ==========================================
-    // GRÁFICAS COMENTADAS PARA PROBAR SI ES EL ERROR
+    // GRÁFICAS INTERACTIVAS CON CHART.JS
     // ==========================================
-    /*
-    Object.values(_charts).forEach(function(c){ if(c) c.destroy(); });
-    _charts = {};
-
-
-    var timeline = { timestamps: [], co2: [], temperature: [], humidity: [], light: [] };
-    var lines = csvText.split('\\n');
+    
+    // Extraer datos del CSV
+    _timeline = { 
+        timestamps: [], 
+        co2: [], 
+        temperature: [], 
+        humidity: [], 
+        light: [] 
+    };
+    
+    var lines = csvText.split('\n');
     var headerSkipped = false;
-    for(var i=0; i<lines.length; i++){
-      var line = lines[i].trim();
-      if(!line || line.startsWith('#')) continue;
-      if(!headerSkipped && (line.startsWith('time') || line.startsWith('timestamp'))) { headerSkipped = true; continue; }
-      if(!headerSkipped) continue;
-      var parts = line.split(',');
-      if(parts.length >= 5) {
-        timeline.timestamps.push(parseInt(parts[0]));
-        timeline.co2.push(parseFloat(parts[1]));
-        timeline.temperature.push(parseFloat(parts[2]));
-        timeline.humidity.push(parseFloat(parts[3]));
-        timeline.light.push(parseFloat(parts[4]));
-      }
+    
+    for(var i = 0; i < lines.length; i++){
+        var line = lines[i].trim();
+        if(!line || line.startsWith('#')) continue;
+        if(!headerSkipped && (line.startsWith('time') || line.startsWith('timestamp'))) { 
+            headerSkipped = true; 
+            continue;
+        }
+        if(!headerSkipped) continue;
+        var parts = line.split(',');
+        if(parts.length >= 5) {
+            var ts = parseFloat(parts[0]);
+            if (!isNaN(ts)) {
+                _timeline.timestamps.push(ts);
+                _timeline.co2.push(parseFloat(parts[1]) || 0);
+                _timeline.temperature.push(parseFloat(parts[2]) || 0);
+                _timeline.humidity.push(parseFloat(parts[3]) || 0);
+                _timeline.light.push(parseFloat(parts[4]) || 0);
+            }
+        }
     }
-
-
-    if (timeline.timestamps && timeline.timestamps.length > 0) {
-      var labels = timeline.timestamps.map(function(ts){ var sec=Math.floor(ts/1000), h=Math.floor(sec/3600)%24, m=Math.floor(sec/60)%60; return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0'); });
-      function mkChart(id, label, data, color) {
-        return new Chart(document.getElementById(id),{
-          type:'line', data:{ labels:labels, datasets:[{ label:label, data:data, borderColor:color, backgroundColor:color+'22', fill:true, tension:0.3, pointRadius:0, borderWidth:1.5 }]},
-          options:{ responsive:true, maintainAspectRatio:true, animation:false, plugins:{ legend:{ labels:{ color:'#8880a0', font:{size:11} } } },
-            scales:{ x:{ ticks:{ color:'#8880a0', font:{size:10}, maxRotation:45, autoSkip:true, maxTicksLimit:10 }, grid:{color:'rgba(255,255,255,0.05)'} }, y:{ ticks:{ color:'#8880a0', font:{size:10} }, grid:{color:'rgba(255,255,255,0.05)'} } }
-          }
+    
+    // Verificar que hay datos
+    if (_timeline.timestamps && _timeline.timestamps.length > 1) {
+        // Crear controles de zoom
+        var zoomHtml = '<div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">' +
+            '<span style="color:#8880a0; font-size:12px;">📊 Zoom:</span>' +
+            '<button class="tab-btn" onclick="setRange(0, 100)">Inicio</button>' +
+            '<button class="tab-btn" onclick="setRange(-100, 0)">Fin</button>' +
+            '<button class="tab-btn active" onclick="setRange(0, -1)">Todo</button>' +
+            '<span style="color:#8880a0; font-size:11px; margin-left:10px;" id="rangeInfo">Cargando...</span>' +
+            '</div>';
+        
+        var tabContainer = document.querySelector('.tab-btns');
+        if (tabContainer) {
+            tabContainer.insertAdjacentHTML('beforebegin', zoomHtml);
+        }
+        
+        // Resetear rango
+        _rangeStart = 0;
+        _rangeEnd = -1;
+        
+        // Generar gráficas
+        updateCharts();
+    } else {
+        document.querySelectorAll('.tab-content').forEach(function(el){ 
+            el.innerHTML = '<div class="empty">No hay suficientes datos para generar gráficas<br>(se necesitan al menos 2 lecturas)</div>';
         });
-      }
-      _charts.co2 = mkChart('ch-co2', 'CO₂ (ppm)', timeline.co2 || [], '#a393e8');
-      _charts.temp = mkChart('ch-temp', 'Temperatura (°C)', timeline.temperature || [], '#f07b50');
-      _charts.hum = mkChart('ch-hum', 'Humedad (%)', timeline.humidity || [], '#50c8a0');
-      _charts.light = mkChart('ch-light', 'Luz (lux)', timeline.light || [], '#f0c040');
-    } else { document.querySelectorAll('.tab-content').forEach(function(el){ el.innerHTML='<div class="empty">Sin datos suficientes para las gráficas</div>'; }); }
-    */
-   
-    // Mensaje temporal mientras se prueban las gráficas
-    document.querySelectorAll('.tab-content').forEach(function(el){ 
-      el.innerHTML='<div class="empty">Gráficas temporalmente deshabilitadas para prueba.<br>Los datos de sesión se cargaron correctamente.</div>'; 
-    });
+    }
    
   } catch(e) { 
     document.getElementById('modal-body').innerHTML='<div class="spinner">Error al cargar los datos de la sesión: ' + e.message + '</div>';
@@ -483,16 +698,6 @@ async function showDetail(sid) {
   }
 }
 
-
-function switchTab(tab, event) {
-  document.querySelectorAll('.tab-content').forEach(function(el){ el.classList.remove('active'); });
-  document.querySelectorAll('.tab-btn').forEach(function(el){ el.classList.remove('active'); });
-  document.getElementById('tab-'+tab).classList.add('active');
-  if (event && event.target) event.target.classList.add('active');
-  setTimeout(function(){ if(_charts[tab]) _charts[tab].resize(); }, 80);
-}
-function closeModal() { document.getElementById('session-modal').classList.remove('open'); }
-document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeModal(); });
 pollStatus();
 loadLists();
 setInterval(pollStatus, 3000);
@@ -501,7 +706,6 @@ setInterval(loadLists, 30000);
 </body>
 </html>)rawliteral";
 
-
 // ============================================================================
 // start() - Configura el AP, registra rutas y crea la tarea
 // ============================================================================
@@ -509,6 +713,7 @@ void WebServerTask::start() {
     _dataMutex = xSemaphoreCreateMutex();
     setupAccessPoint();
     server.on("/", handleRoot);
+    server.on("/chart.min.js", handleChartJs);  // Ruta para servir Chart.js desde SD
     server.on("/api/status", handleApiStatus);
     server.on("/api/session", HTTP_POST, handleApiSession);
     server.on("/api/sessions", handleApiSessions);
@@ -522,7 +727,6 @@ void WebServerTask::start() {
     xTaskCreatePinnedToCore(taskFunction, "WebServerTask", WEB_TASK_STACK, nullptr, WEB_TASK_PRIORITY, &_taskHandle, 1);
 }
 
-
 void WebServerTask::setupAccessPoint() {
     Serial.println("[Web] Configurando Access Point...");
     WiFi.mode(WIFI_AP);
@@ -534,7 +738,6 @@ void WebServerTask::setupAccessPoint() {
     }
 }
 
-
 void WebServerTask::taskFunction(void* pvParams) {
     while (true) {
         server.handleClient();
@@ -542,14 +745,12 @@ void WebServerTask::taskFunction(void* pvParams) {
     }
 }
 
-
 void WebServerTask::updateCurrentData(const SensorData &data) {
     if (_dataMutex && xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         _currentData = data;
         xSemaphoreGive(_dataMutex);
     }
 }
-
 
 void WebServerTask::handleApiStatus() {
     SensorData snap = {0};
@@ -588,7 +789,6 @@ void WebServerTask::handleApiStatus() {
     server.send(200, "application/json", response);
 }
 
-
 void WebServerTask::handleApiSession() {
     StaticJsonDocument<128> doc;
     String payload = server.hasArg("plain") ? server.arg("plain") : server.arg(0);
@@ -606,7 +806,6 @@ void WebServerTask::handleApiSession() {
     serializeJson(resp, out);
     server.send(200, "application/json", out);
 }
-
 
 void WebServerTask::handleApiSessions() {
     File root = SD.open(SD_BASE_PATH);
@@ -656,10 +855,6 @@ void WebServerTask::handleApiSessions() {
     server.send(200, "application/json", response);
 }
 
-
-// ==== AQUÍ EMPIEZA LA MAGIA DE STREAMFILE CERO RAM ==== //
-
-
 void WebServerTask::handleApiSessionStats() {
     if (!server.hasArg("id")) {
         server.send(400, "application/json", "{\"error\":\"Falta el parametro id\"}");
@@ -696,7 +891,6 @@ void WebServerTask::handleApiSessionStats() {
     server.streamFile(f, "application/json");
     f.close();
 }
-
 
 void WebServerTask::handleApiSessionAlerts() {
     if (!server.hasArg("id")) {
@@ -739,7 +933,6 @@ void WebServerTask::handleApiSessionAlerts() {
     f.close();
 }
 
-
 void WebServerTask::handleApiSessionData() {
     if (!server.hasArg("id")) {
         server.send(400, "application/json", "{\"error\":\"Falta el parametro id\"}");
@@ -781,12 +974,35 @@ void WebServerTask::handleApiSessionData() {
     dataFile.close();
 }
 
-
 void WebServerTask::handleNotFound() {
     server.send(404, "text/plain", "404: Not Found");
 }
 
-
 void WebServerTask::handleRoot() {
     server.send_P(200, "text/html", INDEX_HTML);
+}
+
+// ============================================================================
+// handleChartJs() - Sirve Chart.js desde la tarjeta SD
+// ============================================================================
+// Esta función lee el archivo chart.min.js desde la raíz de la tarjeta SD
+// y lo envía al navegador. De esta forma, no ocupa memoria FLASH del ESP32.
+// ============================================================================
+void WebServerTask::handleChartJs() {
+    // Intentar abrir el archivo chart.min.js desde la raíz de la SD
+    File chartFile = SD.open("/chart.min.js", FILE_READ);
+    
+    // Si no se encuentra el archivo, devolver error 404
+    if (!chartFile) {
+        Serial.println("[Web] ERROR: chart.min.js no encontrado en la SD");
+        server.send(404, "text/plain", "404: chart.min.js no encontrado en la SD");
+        return;
+    }
+    
+    // Enviar el archivo al navegador como JavaScript
+    server.streamFile(chartFile, "application/javascript");
+    chartFile.close();
+    
+    // Log opcional para depuración (descomentar si se necesita)
+    // Serial.println("[Web] chart.min.js servido desde la SD");
 }
