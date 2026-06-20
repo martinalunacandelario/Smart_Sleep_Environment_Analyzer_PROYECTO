@@ -1,11 +1,3 @@
-// ============================================================================
-// WebServerTask.cpp - CON CHART.JS SERVIDO DESDE LA SD
-// ============================================================================
-// DESCRIPCIÓN: Servidor web con gráficas Chart.js servido desde la SD.
-//              El archivo chart.min.js se lee desde la tarjeta SD,
-//              liberando ~120KB de memoria FLASH del ESP32.
-// ============================================================================
-
 #include "WebServerTask.h"
 #include "../../include/config.h"
 #include <ArduinoJson.h>
@@ -249,10 +241,14 @@ var _pollTimer = null;
 var _pollErrors = 0;
 var _lastStatus = null;
 
-// Variables para el control de zoom en gráficas
-var _rangeStart = 0;
-var _rangeEnd = -1;  // -1 = todos los datos
-var _timeline = null;  // Almacena los datos del timeline
+// ============================================================================
+// VARIABLES PARA EL CONTROL DE ZOOM EN GRÁFICAS
+// ============================================================================
+var _rangeStart = 0;      // Índice de inicio del rango mostrado
+var _rangeEnd = -1;       // Índice final (-1 = todos los datos)
+var _timeline = null;     // Almacena los datos del timeline (CSV)
+var _zoomPoints = 0;      // Número de puntos por ventana de zoom (0 = todos)
+var _viewOffset = 0;      // Desplazamiento para navegación por páginas
 
 function tickClock() {
   var now = new Date();
@@ -386,9 +382,16 @@ function updateCharts() {
     }
     
     var total = _timeline.timestamps.length;
-    var startIdx = _rangeStart < 0 ? total + _rangeStart : _rangeStart;
-    var endIdx = _rangeEnd < 0 ? total + _rangeEnd : _rangeEnd;
+    var startIdx = _rangeStart;
+    var endIdx = _rangeEnd;
     
+    // Si _rangeEnd === -1, mostrar todos los datos
+    if (endIdx === -1) {
+        startIdx = 0;
+        endIdx = total;
+    }
+    
+    // Asegurar que los índices están dentro del rango
     if (startIdx < 0) startIdx = 0;
     if (endIdx > total) endIdx = total;
     if (endIdx <= startIdx) { startIdx = 0; endIdx = total; }
@@ -415,7 +418,11 @@ function updateCharts() {
     // Actualizar información del rango
     var info = document.getElementById('rangeInfo');
     if (info) {
-        info.textContent = 'Mostrando ' + (endIdx - startIdx) + ' de ' + total + ' datos';
+        if (_zoomPoints === 0) {
+            info.textContent = 'Todo (' + total + ' puntos)';
+        } else {
+            info.textContent = 'Puntos ' + (startIdx + 1) + '-' + endIdx + ' de ' + total + ' (' + Math.round((endIdx - startIdx) / 120) + 'h)';
+        }
     }
     
     // Destruir gráficas anteriores
@@ -529,15 +536,18 @@ function updateCharts() {
     _charts.temp = mkChart('ch-temp', 'Temperatura (°C)', tempData, '#f07b50', '°C');
     _charts.hum = mkChart('ch-hum', 'Humedad (%)', humData, '#50c8a0', '%');
     _charts.light = mkChart('ch-light', 'Luz (lux)', lightData, '#f0c040', 'lux');
-}
-
-// ============================================================================
-// FUNCIÓN PARA CAMBIAR EL RANGO DE ZOOM
-// ============================================================================
-function setRange(start, end) {
-    _rangeStart = start;
-    _rangeEnd = end;
-    updateCharts();
+    
+    // Habilitar/deshabilitar botones de navegación
+    var prevBtn = document.getElementById('navPrev');
+    var nextBtn = document.getElementById('navNext');
+    if (prevBtn && nextBtn) {
+        var hasNav = _zoomPoints > 0 && total > _zoomPoints;
+        var maxOffset = Math.max(0, total - _zoomPoints);
+        prevBtn.disabled = !hasNav || _viewOffset <= 0;
+        nextBtn.disabled = !hasNav || _viewOffset >= maxOffset;
+        prevBtn.style.opacity = prevBtn.disabled ? '0.3' : '1';
+        nextBtn.style.opacity = nextBtn.disabled ? '0.3' : '1';
+    }
 }
 
 // ============================================================================
@@ -549,6 +559,58 @@ function switchTab(tab, event) {
     document.getElementById('tab-'+tab).classList.add('active');
     if (event && event.target) event.target.classList.add('active');
     setTimeout(function(){ if(_charts[tab]) { try { _charts[tab].resize(); } catch(e){} } }, 80);
+}
+
+// ============================================================================
+// FUNCIÓN PARA APLICAR ZOOM POR HORAS
+// ============================================================================
+function setZoomHours(hours, btn) {
+    // Si hours = 0, mostrar todos los datos
+    if (hours === 0) {
+        _zoomPoints = 0;
+        _rangeStart = 0;
+        _rangeEnd = -1;
+        _viewOffset = 0;
+    } else {
+        // Calcular cuántos puntos hay en X horas
+        // Asumiendo que cada punto es ~30 segundos (SENSOR_INTERVAL_MS = 30000)
+        // 1 hora = 3600 segundos / 30 segundos = 120 puntos
+        var pointsPerHour = 120;
+        _zoomPoints = hours * pointsPerHour;
+        _rangeStart = 0;
+        _rangeEnd = _zoomPoints;
+        _viewOffset = 0;
+    }
+    
+    // Actualizar botones
+    document.querySelectorAll('.chart-zoom-btn').forEach(function(b) {
+        b.classList.remove('active');
+    });
+    if (btn) btn.classList.add('active');
+    
+    // Actualizar gráfica
+    updateCharts();
+}
+
+// ============================================================================
+// FUNCIÓN PARA NAVEGAR ENTRE FRANJAS DE ZOOM
+// ============================================================================
+function navigateZoom(direction) {
+    if (_zoomPoints === 0 || !_timeline) return;
+    
+    var total = _timeline.timestamps.length;
+    var maxOffset = Math.max(0, total - _zoomPoints);
+    
+    _viewOffset += direction * _zoomPoints;
+    
+    // Limitar el desplazamiento
+    if (_viewOffset < 0) _viewOffset = 0;
+    if (_viewOffset > maxOffset) _viewOffset = maxOffset;
+    
+    _rangeStart = _viewOffset;
+    _rangeEnd = _viewOffset + _zoomPoints;
+    
+    updateCharts();
 }
 
 function closeModal() { document.getElementById('session-modal').classList.remove('open'); }
@@ -666,13 +728,22 @@ async function showDetail(sid) {
     
     // Verificar que hay datos
     if (_timeline.timestamps && _timeline.timestamps.length > 1) {
-        // Crear controles de zoom
-        var zoomHtml = '<div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">' +
+        // ========================================================================
+        // CONTROLES DE ZOOM: 1h, 2h, 3h, 4h, 6h, 8h, Todo + flechas de navegación
+        // ========================================================================
+        var zoomHtml = '<div style="display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">' +
             '<span style="color:#8880a0; font-size:12px;">📊 Zoom:</span>' +
-            '<button class="tab-btn" onclick="setRange(0, 100)">Inicio</button>' +
-            '<button class="tab-btn" onclick="setRange(-100, 0)">Fin</button>' +
-            '<button class="tab-btn active" onclick="setRange(0, -1)">Todo</button>' +
-            '<span style="color:#8880a0; font-size:11px; margin-left:10px;" id="rangeInfo">Cargando...</span>' +
+            '<button class="tab-btn chart-zoom-btn" onclick="setZoomHours(1,this)">1h</button>' +
+            '<button class="tab-btn chart-zoom-btn" onclick="setZoomHours(2,this)">2h</button>' +
+            '<button class="tab-btn chart-zoom-btn" onclick="setZoomHours(3,this)">3h</button>' +
+            '<button class="tab-btn chart-zoom-btn" onclick="setZoomHours(4,this)">4h</button>' +
+            '<button class="tab-btn chart-zoom-btn" onclick="setZoomHours(6,this)">6h</button>' +
+            '<button class="tab-btn chart-zoom-btn" onclick="setZoomHours(8,this)">8h</button>' +
+            '<button class="tab-btn chart-zoom-btn active" onclick="setZoomHours(0,this)">Todo</button>' +
+            '<span style="margin-left:8px;">|</span>' +
+            '<button class="tab-btn" id="navPrev" onclick="navigateZoom(-1)" style="font-size:16px;padding:0 12px;">◀</button>' +
+            '<button class="tab-btn" id="navNext" onclick="navigateZoom(1)" style="font-size:16px;padding:0 12px;">▶</button>' +
+            '<span style="color:#8880a0; font-size:11px; margin-left:10px;" id="rangeInfo">Todo</span>' +
             '</div>';
         
         var tabContainer = document.querySelector('.tab-btns');
@@ -681,8 +752,10 @@ async function showDetail(sid) {
         }
         
         // Resetear rango
+        _zoomPoints = 0;
         _rangeStart = 0;
         _rangeEnd = -1;
+        _viewOffset = 0;
         
         // Generar gráficas
         updateCharts();
