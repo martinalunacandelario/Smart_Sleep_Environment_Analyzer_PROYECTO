@@ -1,13 +1,13 @@
 #include <Arduino.h>
-#include "tasks/SensorTask.h"
-#include "tasks/DisplayTask.h"
-#include "tasks/ButtonTask.h"
-#include "tasks/AlertTask.h"
-#include "tasks/StorageTask.h"
-#include "tasks/AnalysisTask.h"
-#include "tasks/WebServerTask.h"
+#include "tasks/task_Sensor.h"
+#include "tasks/task_Display.h"
+#include "tasks/task_Button.h"
+#include "tasks/task_Alert.h"
+#include "tasks/task_Storage.h"
+#include "tasks/task_Analysis.h"
+#include "tasks/task_WebServer.h"
 #include "SessionManager.h"
-#include "../lib/drivers/NTPManager.h"  
+#include "../lib/drivers/NTPManager.h"  // <-- CAMBIADO
 
 // ============================================================================
 // COLAS DE DATOS DE SENSORES (una por consumidor)

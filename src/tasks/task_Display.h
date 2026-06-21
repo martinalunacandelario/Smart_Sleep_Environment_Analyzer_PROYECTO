@@ -1,13 +1,13 @@
-#ifndef DISPLAY_TASK_H
-#define DISPLAY_TASK_H
+#ifndef TASK_DISPLAY_H
+#define TASK_DISPLAY_H
 
 #include <Arduino.h>                      // Base de Arduino (Serial, millis, etc.)
 #include <U8g2lib.h>                     // Librería para OLED (SH1106)
 #include <Wire.h>                        // Comunicación I2C
 #include <freertos/task.h>               // Tareas FreeRTOS
 #include <freertos/queue.h>              // Colas FreeRTOS
-#include "SensorTask.h"                  // Estructura SensorData (CO2, temp, hum, luz)
-#include "AlertTask.h"                   // Estructura Recommendation (para recibir recomendaciones) ← NUEVO
+#include "task_Sensor.h"                  // Estructura SensorData (CO2, temp, hum, luz)
+#include "task_Alert.h"                   // Estructura Recommendation (para recibir recomendaciones) ← NUEVO
 
 // Comando que puede recibir la DisplayTask (inicio/fin sesión)
 struct DisplayCommand {
@@ -43,4 +43,4 @@ private:
     static const char* getQualityString();      // Retorna "OPTIMO", "ACEPTABLE" o "DESFAVORABLE"
 };
 
-#endif
+#endif // TASK_DISPLAY_H

@@ -1,4 +1,4 @@
-#include "ButtonTask.h"
+#include "task_Button.h"
 #include "../../include/config.h"
 
 #define BUTTON_PIN            25   // GPIO25 — pulsador físico
@@ -21,7 +21,7 @@ void ButtonTask::start() {
 
     xTaskCreatePinnedToCore(
         taskFunction,
-        "ButtonTask",
+        "task_Button",
         BUTTON_TASK_STACK,
         nullptr,
         BUTTON_TASK_PRIORITY,

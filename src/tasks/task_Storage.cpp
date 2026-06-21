@@ -1,4 +1,4 @@
-#include "StorageTask.h"
+#include "task_Storage.h"
 #include "../../include/config.h"
 #include "../../lib/drivers/NTPManager.h"  // <-- CAMBIADO
 #include <SPI.h>
@@ -35,7 +35,7 @@ void StorageTask::start(QueueHandle_t sensorQueue, QueueHandle_t cmdQueue) {
     
     xTaskCreatePinnedToCore(
         taskFunction,
-        "StorageTask",
+        "task_Storage",
         STORAGE_TASK_STACK,
         nullptr,
         STORAGE_TASK_PRIORITY,

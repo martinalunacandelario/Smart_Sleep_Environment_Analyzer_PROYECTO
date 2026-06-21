@@ -1,4 +1,4 @@
-#include "DisplayTask.h"
+#include "task_Display.h"
 #include "../../include/config.h"
 #include "../../lib/drivers/NTPManager.h"  // <-- CAMBIADO
 #include <U8g2lib.h>
@@ -50,7 +50,7 @@ void DisplayTask::start(QueueHandle_t sensorQueue, QueueHandle_t cmdQueue, Queue
 
     xTaskCreatePinnedToCore(
         taskFunction,
-        "DisplayTask",
+        "task_Display",
         DISPLAY_TASK_STACK,
         nullptr,
         DISPLAY_TASK_PRIORITY,

@@ -1,13 +1,13 @@
-#ifndef STORAGE_TASK_H
-#define STORAGE_TASK_H
+#ifndef TASK_STORAGE_H
+#define TASK_STORAGE_H
 
 #include <Arduino.h>
 #include <SPI.h>
 #include <SD.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
-#include "SensorTask.h"      // Para SensorData (estructura con CO2, temp, hum, luz)
-#include "DisplayTask.h"     // Para DisplayCommand (comandos de inicio/fin sesión)
+#include "task_Sensor.h"      // Para SensorData (estructura con CO2, temp, hum, luz)
+#include "task_Display.h"     // Para DisplayCommand (comandos de inicio/fin sesión)
 
 class StorageTask {
 public:
@@ -47,4 +47,4 @@ private:
     static String getCurrentDateTime();
 };
 
-#endif // STORAGE_TASK_H
+#endif // TASK_STORAGE_H

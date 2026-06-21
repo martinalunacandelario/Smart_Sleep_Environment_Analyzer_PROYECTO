@@ -1,4 +1,4 @@
-#include "WebServerTask.h"
+#include "task_WebServer.h"
 #include "../../include/config.h"
 #include "../../lib/drivers/NTPManager.h"
 #include <ArduinoJson.h>
@@ -668,14 +668,21 @@ async function showDetail(sid) {
     // MODIFICACIÓN: Quitar "→ Condiciones óptimas" de la best hour
     // Ahora solo muestra la franja horaria sin mensaje adicional
     // ================================================================
-    var bestHour = '--';
-    if (stats.bestHour && stats.bestHour.display && stats.bestHour.display !== '') {
-        bestHour = stats.bestHour.display;
-    } else if (stats.bestHour && stats.bestHour.start !== undefined) {
-        var fmt = function(s){ return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); };
-        bestHour = fmt(stats.bestHour.start)+' – '+fmt(stats.bestHour.end);
+   var bestHour = '--';
+    if (stats.bestHour) {
+        if (stats.bestHour.valid === false) {
+            bestHour = stats.bestHour.message || 'No se puede determinar la franja';
+        } else if (stats.bestHour.display && stats.bestHour.display !== '') {
+            bestHour = stats.bestHour.display;
+        } else if (stats.bestHour.start !== undefined) {
+            var fmt = function(s){
+                var h = Math.floor(s / 3600);
+                var m = Math.floor((s % 3600) / 60);
+                return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+            };
+            bestHour = fmt(stats.bestHour.start) + ' – ' + fmt(stats.bestHour.end);
+        }
     }
-    
     var recsHtml = '';
     if (stats.recommendations && stats.recommendations.length > 0) {
       stats.recommendations.forEach(function(rec){ recsHtml += '<div class="rec-item"><span class="rec-time">'+(rec.time||'')+'</span><span class="rec-text">'+(rec.message||rec)+'</span></div>'; });
@@ -810,7 +817,7 @@ void WebServerTask::start() {
     server.begin();
     Serial.println("[Web] Servidor iniciado");
     Serial.printf("[Web] http://%s\n", WiFi.softAPIP().toString().c_str());
-    xTaskCreatePinnedToCore(taskFunction, "WebServerTask", WEB_TASK_STACK, nullptr, WEB_TASK_PRIORITY, &_taskHandle, 1);
+    xTaskCreatePinnedToCore(taskFunction, "task_WebServer", WEB_TASK_STACK, nullptr, WEB_TASK_PRIORITY, &_taskHandle, 1);
 }
 
 void WebServerTask::setupAccessPoint() {

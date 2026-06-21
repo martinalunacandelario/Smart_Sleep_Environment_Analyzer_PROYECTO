@@ -1,12 +1,12 @@
-#ifndef ALERT_TASK_H
-#define ALERT_TASK_H
+#ifndef TASK_ALERT_H
+#define TASK_ALERT_H
 
 #include <Arduino.h>
 #include <SPI.h>
 #include <SD.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
-#include "SensorTask.h"          // Para SensorData
+#include "task_Sensor.h"          // Para SensorData
 
 // ============================================================================
 // ESTRUCTURAS DE DATOS
@@ -38,6 +38,20 @@ public:
                       QueueHandle_t recQueue,
                       unsigned long* sessionCounter,
                       QueueHandle_t cmdQueue);
+
+    // ==========================================================================
+    // MÉTODOS PÚBLICOS PARA EVALUACIÓN (accesibles desde tests)
+    // ==========================================================================
+    
+    // --- Evaluación de variables ambientales ---
+    static int getCo2State(float co2);          // 0=bueno, 1=regular, 2=malo
+    static int getTempState(float temp);        // 0=bueno, 1=regular, 2=malo
+    static int getHumState(float hum);          // 0=bueno, 1=regular, 2=malo
+    static int getLightState(float light);      // 0=bueno, 1=regular, 2=malo
+    static int getGlobalState(SensorData &data); // Devuelve el peor estado (0,1,2)
+
+    // --- Generación de recomendaciones ---
+    static const char* getRecommendation(SensorData &data); // Mensaje según variable crítica
 
 private:
     // ==========================================================================
@@ -72,19 +86,9 @@ private:
     static void saveAlertToSD(const char* type, const char* message); // Guarda una alerta
     static String getCurrentTimeString();       // Devuelve hora actual desde inicio de sesión (HH:MM)
 
-    // --- Evaluación de variables ambientales ---
-    static int getCo2State(float co2);          // 0=bueno, 1=regular, 2=malo
-    static int getTempState(float temp);        // 0=bueno, 1=regular, 2=malo
-    static int getHumState(float hum);          // 0=bueno, 1=regular, 2=malo
-    static int getLightState(float light);      // 0=bueno, 1=regular, 2=malo
-    static int getGlobalState(SensorData &data); // Devuelve el peor estado (0,1,2)
-
     // --- Control de hardware ---
     static void setLedState(int state);         // 0=Verde, 1=Amarillo, 2=Rojo
     static void playAlarm();                   // Reproduce la melodía de alarma
-
-    // --- Generación de recomendaciones ---
-    static const char* getRecommendation(SensorData &data); // Mensaje según variable crítica
 };
 
-#endif // ALERT_TASK_H
+#endif // TASK_ALERT_H

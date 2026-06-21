@@ -1,5 +1,5 @@
-#include "SensorTask.h"
-#include "WebServerTask.h"          // Para actualizar datos en la web
+#include "task_Sensor.h"
+#include "task_WebServer.h"          // Para actualizar datos en la web
 #include "../../lib/drivers/SCD41.h"
 #include "../../lib/drivers/BH1750.h"
 #include "../../include/config.h"
@@ -47,7 +47,7 @@ void SensorTask::start(QueueHandle_t queueForDisplay,
 
     xTaskCreatePinnedToCore(
         taskFunction,
-        "SensorTask",
+        "task_Sensor",
         SENSOR_TASK_STACK,
         nullptr,
         SENSOR_TASK_PRIORITY,

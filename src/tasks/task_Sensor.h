@@ -1,5 +1,5 @@
-#ifndef SENSOR_TASK_H
-#define SENSOR_TASK_H
+#ifndef TASK_SENSOR_H
+#define TASK_SENSOR_H
 
 #include <Arduino.h>
 #include <freertos/task.h>
@@ -33,4 +33,4 @@ private:
     static bool readSensors(SensorData &data); // Lee sensores y rellena la estructura
 };
 
-#endif
+#endif // TASK_SENSOR_H

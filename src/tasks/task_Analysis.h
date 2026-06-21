@@ -1,5 +1,5 @@
-#ifndef ANALYSIS_TASK_H
-#define ANALYSIS_TASK_H
+#ifndef TASK_ANALYSIS_H
+#define TASK_ANALYSIS_H
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -7,7 +7,7 @@
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include <vector>
-#include "DisplayTask.h"
+#include "task_Display.h"
 
 // ============================================================================
 // Mínimo de muestras necesarias para calcular una "mejor franja" fiable.
@@ -58,7 +58,27 @@ struct SessionStats {
 
 class AnalysisTask {
 public:
+    // ================================================================
+    // FUNCIONES PÚBLICAS (disponibles para tests y uso externo)
+    // ================================================================
+    
+    // Inicia la tarea
     static void start(QueueHandle_t cmdQueue, unsigned long* sessionCounter);
+    
+    // Lectura y análisis
+    static bool readSessionFile(const String& filename, SessionStats &stats);
+    static void calculateStatistics(SessionStats &stats);
+    static void findBestHour(SessionStats &stats);
+    static void saveStatisticsToSD(const SessionStats &stats);
+    static String getLastSessionFileName();
+    
+    // Puntuaciones
+    static int calculateCO2Score(float co2_avg);
+    static int calculateTempScore(float temp_avg);
+    static int calculateHumidityScore(float hum_avg);
+    static int calculateLightScore(float light_avg);
+    static int calculateSleepScore(SessionStats &stats);
+    static String getInterpretation(int score);
 
 private:
     static TaskHandle_t _taskHandle;
@@ -66,20 +86,6 @@ private:
     static unsigned long* _sessionCounter;
     
     static void taskFunction(void* pvParams);
-    
-    static bool readSessionFile(const String& filename, SessionStats &stats);
-    static void calculateStatistics(SessionStats &stats);
-    static void findBestHour(SessionStats &stats);
-    static void saveStatisticsToSD(const SessionStats &stats);
-    
-    static int calculateCO2Score(float co2_avg);
-    static int calculateTempScore(float temp_avg);
-    static int calculateHumidityScore(float hum_avg);
-    static int calculateLightScore(float light_avg);
-    static int calculateSleepScore(SessionStats &stats);
-    static String getInterpretation(int score);
-    
-    static String getLastSessionFileName();
 };
 
-#endif
+#endif // TASK_ANALYSIS_H

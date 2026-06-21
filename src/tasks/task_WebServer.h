@@ -1,6 +1,5 @@
-#ifndef WEB_SERVER_TASK_H
-#define WEB_SERVER_TASK_H
-
+#ifndef TASK_WEBSERVER_H
+#define TASK_WEBSERVER_H
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -10,15 +9,13 @@
 #include <ArduinoJson.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
-#include "SensorTask.h"
+#include "task_Sensor.h"
 #include "../SessionManager.h"
-
 
 class WebServerTask {
 public:
     static void start();
     static void updateCurrentData(const SensorData &data);
-
 
 private:
     static TaskHandle_t _taskHandle;
@@ -44,5 +41,4 @@ private:
     static void handleChartJs();
 };
 
-
-#endif
+#endif // TASK_WEBSERVER_H

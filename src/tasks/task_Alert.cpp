@@ -1,4 +1,4 @@
-#include "AlertTask.h"
+#include "task_Alert.h"
 #include "../../include/config.h"
 #include "../../lib/drivers/NTPManager.h"  
 #include <SPI.h>
@@ -42,7 +42,7 @@ void AlertTask::start(QueueHandle_t sensorQueue,
 
     xTaskCreatePinnedToCore(
         taskFunction,
-        "AlertTask",
+        "task_Alert",
         ALERT_TASK_STACK,
         nullptr,
         ALERT_TASK_PRIORITY,
