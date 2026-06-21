@@ -40,11 +40,6 @@ void AnalysisTask::taskFunction(void* pvParams) {
             if (!cmd.sessionActive && _sessionCounter != nullptr) {
                 Serial.println("[Analysis] Fin de sesión detectado. Analizando datos...");
                 
-                // ================================================================
-                // FIX: ESPERAR A QUE STORAGETASK TERMINE DE CERRAR EL ARCHIVO
-                // Esto evita que AnalysisTask lea el CSV mientras StorageTask
-                // todavía lo está escribiendo/cerrando.
-                // ================================================================
                 Serial.println("[Analysis] Esperando 2 segundos para que StorageTask cierre el archivo...");
                 vTaskDelay(pdMS_TO_TICKS(2000));
                 
@@ -78,10 +73,13 @@ void AnalysisTask::taskFunction(void* pvParams) {
                                       stats.light_avg, stats.light_max, stats.light_min, stats.light_score);
                         Serial.printf("\nSLEEP SCORE: %d/100 - %s\n", stats.sleepScore, stats.interpretation.c_str());
                         
-                        // --- Mejor franja horaria: distingue datos insuficientes ---
+                        // ================================================================
+                        // FIX: Usar sessionStartEpoch SIEMPRE que sea > 0
+                        // (aunque el WiFi se haya perdido durante la sesión)
+                        // ================================================================
                         if (!stats.bestHourValid) {
                             Serial.println("Mejor franja: No se puede determinar la franja debido al poco tiempo de la sesion");
-                        } else if (NTPManager::isTimeSynced() && stats.sessionStartEpoch > 0) {
+                        } else if (stats.sessionStartEpoch > 0) {
                             struct tm startTm, endTm;
                             time_t startTime = stats.bestHourStart;
                             time_t endTime = stats.bestHourEnd;
@@ -110,7 +108,7 @@ void AnalysisTask::taskFunction(void* pvParams) {
 }
 
 // ============================================================================
-// getLastSessionFileName() - Obtiene la RUTA COMPLETA del archivo CSV
+// getLastSessionFileName()
 // ============================================================================
 String AnalysisTask::getLastSessionFileName() {
     if (_sessionCounter == nullptr) return "";
@@ -140,10 +138,7 @@ String AnalysisTask::getLastSessionFileName() {
 }
 
 // ============================================================================
-// readSessionFile() - Lee el archivo CSV y guarda los datos
-// ============================================================================
-// PARSEA CORRECTAMENTE "# Hora de fin:" que está al FINAL del archivo
-// (footer escrito por closeSessionFile() en StorageTask)
+// readSessionFile() - CORREGIDO
 // ============================================================================
 bool AnalysisTask::readSessionFile(const String& filename, SessionStats &stats) {
     File file = SD.open(filename.c_str(), FILE_READ);
@@ -152,13 +147,11 @@ bool AnalysisTask::readSessionFile(const String& filename, SessionStats &stats) 
         return false;
     }
     
-    // Inicializar variables de fecha/hora
     stats.sessionStartEpoch = 0;
     stats.date = "";
     stats.startTime = "";
     stats.endTime = "";
     
-    // --- Bucle 1: cabecera (antes de los datos) ---
     while (file.available()) {
         String line = file.readStringUntil('\n');
         line.trim();
@@ -170,9 +163,18 @@ bool AnalysisTask::readSessionFile(const String& filename, SessionStats &stats) 
             stats.startTime = line.substring(17);
             stats.startTime.trim();
         } else if (line.startsWith("# Timestamp de inicio (epoch):")) {
-            stats.sessionStartEpoch = line.substring(29).toInt();
+            // ================================================================
+            // FIX: Extraer el número correctamente (buscar los dos puntos)
+            // ================================================================
+            int colonPos = line.indexOf(':');
+            if (colonPos >= 0) {
+                String epochStr = line.substring(colonPos + 1);
+                epochStr.trim();
+                stats.sessionStartEpoch = epochStr.toInt();
+                Serial.printf("[Analysis] sessionStartEpoch leído: %lu\n", stats.sessionStartEpoch);
+            }
         } else if (line.startsWith("timestamp_ms")) {
-            break;   // fin de cabecera, empiezan los datos
+            break;
         }
     }
     
@@ -185,14 +187,12 @@ bool AnalysisTask::readSessionFile(const String& filename, SessionStats &stats) 
     stats.hum_values.clear();
     stats.light_values.clear();
     
-    // --- Bucle 2: filas de datos + footer ("# Hora de fin:" al final) ---
     while (file.available()) {
         String line = file.readStringUntil('\n');
         line.trim();
         
         if (line.length() == 0) continue;
         
-        // Parsear el footer en vez de descartarlo
         if (line.startsWith("#")) {
             if (line.startsWith("# Hora de fin:")) {
                 stats.endTime = line.substring(14);
@@ -243,7 +243,7 @@ bool AnalysisTask::readSessionFile(const String& filename, SessionStats &stats) 
 }
 
 // ============================================================================
-// calculateStatistics() - Calcula medias, máximos y mínimos
+// calculateStatistics()
 // ============================================================================
 void AnalysisTask::calculateStatistics(SessionStats &stats) {
     if (stats.co2_values.empty()) return;
@@ -294,7 +294,7 @@ void AnalysisTask::calculateStatistics(SessionStats &stats) {
 }
 
 // ============================================================================
-// calculateCO2Score() - Calcula puntuación de CO2 (0-40)
+// Puntuaciones
 // ============================================================================
 int AnalysisTask::calculateCO2Score(float co2_avg) {
     if (co2_avg < 800) return 40;
@@ -304,9 +304,6 @@ int AnalysisTask::calculateCO2Score(float co2_avg) {
     return 0;
 }
 
-// ============================================================================
-// calculateTempScore() - Calcula puntuación de temperatura (0-25)
-// ============================================================================
 int AnalysisTask::calculateTempScore(float temp_avg) {
     if (temp_avg >= 18.0 && temp_avg <= 22.0) return 25;
     if (temp_avg > 22.0 && temp_avg <= 24.0) return 18;
@@ -314,36 +311,22 @@ int AnalysisTask::calculateTempScore(float temp_avg) {
     return 0;
 }
 
-// ============================================================================
-// calculateHumidityScore() - Calcula puntuación de humedad (0-20)
-// ============================================================================
 int AnalysisTask::calculateHumidityScore(float hum_avg) {
     if (hum_avg >= 40.0 && hum_avg <= 60.0) return 20;
-    if ((hum_avg >= 30.0 && hum_avg < 40.0) || 
-        (hum_avg > 60.0 && hum_avg <= 70.0)) return 12;
+    if ((hum_avg >= 30.0 && hum_avg < 40.0) || (hum_avg > 60.0 && hum_avg <= 70.0)) return 12;
     return 0;
 }
 
-// ============================================================================
-// calculateLightScore() - Calcula puntuación de iluminación (0-15)
-// ============================================================================
 int AnalysisTask::calculateLightScore(float light_avg) {
     if (light_avg < 5.0) return 15;
     if (light_avg <= 20.0) return 8;
     return 0;
 }
 
-// ============================================================================
-// calculateSleepScore() - Calcula el Sleep Score total (0-100)
-// ============================================================================
 int AnalysisTask::calculateSleepScore(SessionStats &stats) {
-    int score = stats.co2_score + stats.temp_score + stats.hum_score + stats.light_score;
-    return score;
+    return stats.co2_score + stats.temp_score + stats.hum_score + stats.light_score;
 }
 
-// ============================================================================
-// getInterpretation() - Devuelve texto según la puntuación
-// ============================================================================
 String AnalysisTask::getInterpretation(int score) {
     if (score >= 85) return "Condiciones optimas";
     if (score >= 70) return "Buenas condiciones";
@@ -353,10 +336,10 @@ String AnalysisTask::getInterpretation(int score) {
 }
 
 // ============================================================================
-// findBestHour() - Encuentra la mejor franja horaria (1 hora de duración)
+// findBestHour() - CORREGIDO
 // ============================================================================
 void AnalysisTask::findBestHour(SessionStats &stats) {
-    int minSamples = 120;  // 1 hora (30s * 120 = 3600s)
+    int minSamples = 120;
     
     #ifdef MIN_SAMPLES_FOR_BESTHOUR
         minSamples = MIN_SAMPLES_FOR_BESTHOUR;
@@ -412,7 +395,11 @@ void AnalysisTask::findBestHour(SessionStats &stats) {
         stats.bestHourStart = stats.timestamps[bestIndex] / 1000;
         stats.bestHourEnd = stats.timestamps[bestIndex + windowSize - 1] / 1000;
 
-        if (NTPManager::isTimeSynced() && stats.sessionStartEpoch > 0) {
+        // ================================================================
+        // FIX: Usar sessionStartEpoch SIEMPRE que sea > 0
+        // (aunque el WiFi se haya perdido durante la sesión)
+        // ================================================================
+        if (stats.sessionStartEpoch > 0) {
             stats.bestHourStart = stats.sessionStartEpoch + stats.bestHourStart;
             stats.bestHourEnd = stats.sessionStartEpoch + stats.bestHourEnd;
         }
@@ -429,7 +416,7 @@ void AnalysisTask::findBestHour(SessionStats &stats) {
 }
 
 // ============================================================================
-// saveStatisticsToSD() - Guarda las estadísticas en un archivo JSON
+// saveStatisticsToSD() - CORREGIDO
 // ============================================================================
 void AnalysisTask::saveStatisticsToSD(const SessionStats &stats) {
     char statsPath[64];
@@ -444,7 +431,6 @@ void AnalysisTask::saveStatisticsToSD(const SessionStats &stats) {
     statsFile.println("{");
     statsFile.printf("  \"sessionId\": %lu,\n", stats.sessionId);
     statsFile.printf("  \"duration\": %lu,\n", stats.duration);
-    // *** FIX: añadido sessionStartEpoch para que la gráfica web use hora real ***
     statsFile.printf("  \"sessionStartEpoch\": %lu,\n", stats.sessionStartEpoch);
     statsFile.printf("  \"sleepScore\": %d,\n", stats.sleepScore);
     statsFile.printf("  \"interpretation\": \"%s\",\n", stats.interpretation.c_str());
@@ -480,15 +466,14 @@ void AnalysisTask::saveStatisticsToSD(const SessionStats &stats) {
     statsFile.printf("    \"score\": %d\n", stats.light_score);
     statsFile.println("  },");
     
-    // --- Mejor franja horaria: incluye "valid", "start", "end" y "display" ---
+    // ================================================================
+    // FIX: Usar sessionStartEpoch SIEMPRE que sea > 0
+    // ================================================================
     statsFile.println("  \"bestHour\": {");
     if (!stats.bestHourValid) {
         statsFile.println("    \"valid\": false,");
         statsFile.println("    \"message\": \"No se puede determinar la franja debido al poco tiempo de la sesion\"");
-    } else if (NTPManager::isTimeSynced() && stats.sessionStartEpoch > 0 && stats.bestHourStart > 1000000000) {
-        // ================================================================
-        // CASO 1: Hora REAL (epoch) -> display en HH:MM
-        // ================================================================
+    } else if (stats.sessionStartEpoch > 0 && stats.bestHourStart > 1000000000) {
         statsFile.println("    \"valid\": true,");
         statsFile.printf("    \"start\": %lu,\n", stats.bestHourStart);
         statsFile.printf("    \"end\": %lu,\n", stats.bestHourEnd);
@@ -503,11 +488,29 @@ void AnalysisTask::saveStatisticsToSD(const SessionStats &stats) {
         strftime(startStr, sizeof(startStr), "%H:%M", &startTm);
         strftime(endStr, sizeof(endStr), "%H:%M", &endTm);
         statsFile.printf("    \"display\": \"%s - %s\"\n", startStr, endStr);
+    } else if (stats.sessionStartEpoch > 0) {
+        // ================================================================
+        // CASO INTERMEDIO: sessionStartEpoch existe pero bestHourStart no se convirtió
+        // Convertir a hora real manualmente
+        // ================================================================
+        statsFile.println("    \"valid\": true,");
+        statsFile.printf("    \"start\": %lu,\n", stats.bestHourStart);
+        statsFile.printf("    \"end\": %lu,\n", stats.bestHourEnd);
+        
+        unsigned long realStart = stats.sessionStartEpoch + stats.bestHourStart;
+        unsigned long realEnd = stats.sessionStartEpoch + stats.bestHourEnd;
+        
+        struct tm startTm, endTm;
+        time_t startTime = realStart;
+        time_t endTime = realEnd;
+        localtime_r(&startTime, &startTm);
+        localtime_r(&endTime, &endTm);
+        
+        char startStr[16], endStr[16];
+        strftime(startStr, sizeof(startStr), "%H:%M", &startTm);
+        strftime(endStr, sizeof(endStr), "%H:%M", &endTm);
+        statsFile.printf("    \"display\": \"%s - %s (hora real)\"\n", startStr, endStr);
     } else {
-        // ================================================================
-        // CASO 2: Tiempo RELATIVO (segundos desde inicio de sesión)
-        // FIX: display ahora en HH:MM (antes calculaba MM:SS por error)
-        // ================================================================
         statsFile.println("    \"valid\": true,");
         statsFile.printf("    \"start\": %lu,\n", stats.bestHourStart);
         statsFile.printf("    \"end\": %lu,\n", stats.bestHourEnd);

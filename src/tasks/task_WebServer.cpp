@@ -388,6 +388,9 @@ async function loadLists() {
   } catch(e){ console.error('[loadLists]',e); }
 }
 
+// ================================================================
+// updateCharts() - CORREGIDO: usa sessionStartEpoch para hora real
+// ================================================================
 function updateCharts() {
     if (!_timeline || !_timeline.timestamps || _timeline.timestamps.length === 0) {
         document.querySelectorAll('.tab-content').forEach(function(el){ 
@@ -410,7 +413,7 @@ function updateCharts() {
     if (endIdx <= startIdx) { startIdx = 0; endIdx = total; }
     
     // ================================================================
-    // GENERAR ETIQUETAS DEL EJE X (HORA REAL si hay NTP)
+    // GENERAR ETIQUETAS DEL EJE X (HORA REAL si hay sessionStartEpoch)
     // ================================================================
     var labels = [];
     var co2Data = [];
@@ -513,17 +516,26 @@ function updateCharts() {
                                 if (idx >= _timeline.timestamps.length) return '';
                                 var ts = _timeline.timestamps[idx];
                                 var sec = Math.floor(ts / 1000);
+                                
+                                // ================================================================
+                                // ✅ Tooltip con hora REAL o relativa
+                                // ================================================================
                                 if (hasNTP) {
                                     var realTime = epochStart + sec;
                                     var date = new Date(realTime * 1000);
-                                    return 'Hora: ' + String(date.getHours()).padStart(2,'0') + ':' + 
-                                           String(date.getMinutes()).padStart(2,'0') + ':' + 
-                                           String(date.getSeconds()).padStart(2,'0');
+                                    var dateStr = 
+                                        String(date.getFullYear()) + '-' +
+                                        String(date.getMonth()+1).padStart(2,'0') + '-' +
+                                        String(date.getDate()).padStart(2,'0') + ' ' +
+                                        String(date.getHours()).padStart(2,'0') + ':' + 
+                                        String(date.getMinutes()).padStart(2,'0') + ':' + 
+                                        String(date.getSeconds()).padStart(2,'0');
+                                    return dateStr;
                                 } else {
                                     var h = Math.floor(sec / 3600) % 24;
                                     var m = Math.floor(sec / 60) % 60;
                                     var s = Math.floor(sec % 60);
-                                    return 'Tiempo: ' + 
+                                    return '+' + 
                                         String(h).padStart(2, '0') + ':' + 
                                         String(m).padStart(2, '0') + ':' + 
                                         String(s).padStart(2, '0');
@@ -632,6 +644,9 @@ function navigateZoom(direction) {
 function closeModal() { document.getElementById('session-modal').classList.remove('open'); }
 document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeModal(); });
 
+// ================================================================
+// showDetail() - CORREGIDO: guarda sessionStartEpoch en _timeline
+// ================================================================
 async function showDetail(sid) {
   document.getElementById('modal-body').innerHTML='<div class="spinner">Cargando datos de la sesión...</div>';
   document.getElementById('session-modal').classList.add('open');
@@ -665,10 +680,6 @@ async function showDetail(sid) {
       alerts.alerts.forEach(function(a){ alertsHtml += '<li><strong>'+(a.time||'')+'</strong> → '+(a.type||'')+': '+(a.message||'')+'</li>'; });
     } else { alertsHtml = '<li class="ok">Sin alertas registradas</li>'; }
     
-    // ================================================================
-    // MODIFICACIÓN: Quitar "→ Condiciones óptimas" de la best hour
-    // Ahora solo muestra la franja horaria sin mensaje adicional
-    // ================================================================
    var bestHour = '--';
     if (stats.bestHour) {
         if (stats.bestHour.valid === false) {
@@ -823,10 +834,6 @@ void WebServerTask::start() {
 
 void WebServerTask::setupAccessPoint() {
     Serial.println("[Web] Configurando Access Point...");
-    // FIX: WIFI_AP_STA en vez de WIFI_AP. NTPManager::begin() ya dejó el WiFi
-    // en modo AP_STA con el STA conectado a internet (para NTP). Si aquí
-    // forzamos solo WIFI_AP, se pierde la conexión STA y el NTP deja de
-    // tener acceso a internet a partir de este punto.
     WiFi.mode(WIFI_AP_STA);
     bool ok = WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, AP_HIDDEN);
     if (ok) {
@@ -839,7 +846,7 @@ void WebServerTask::setupAccessPoint() {
 void WebServerTask::taskFunction(void* pvParams) {
     while (true) {
         server.handleClient();
-        OTAManager::handle();          // <-- NUEVO: Manejar OTA
+        OTAManager::handle();
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -885,9 +892,6 @@ void WebServerTask::handleApiStatus() {
     doc["status"] = status;
     doc["sessionActive"] = SessionManager::isSessionActive();
     
-    // ================================================================
-    // AÑADIR HORA Y FECHA REAL DESDE NTP
-    // ================================================================
     if (NTPManager::isTimeSynced()) {
         doc["ntpTime"] = NTPManager::getCurrentTime();
         doc["ntpDate"] = NTPManager::getCurrentDate();
