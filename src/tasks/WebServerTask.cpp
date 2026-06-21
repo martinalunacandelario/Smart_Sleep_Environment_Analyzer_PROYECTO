@@ -1,6 +1,6 @@
 #include "WebServerTask.h"
 #include "../../include/config.h"
-#include "../../lib/drivers/NTPManager.h"  // <-- CAMBIADO
+#include "../../lib/drivers/NTPManager.h"
 #include <ArduinoJson.h>
 #include <SD.h>
 
@@ -408,18 +408,37 @@ function updateCharts() {
     if (endIdx > total) endIdx = total;
     if (endIdx <= startIdx) { startIdx = 0; endIdx = total; }
     
+    // ================================================================
+    // GENERAR ETIQUETAS DEL EJE X (HORA REAL si hay NTP)
+    // ================================================================
     var labels = [];
     var co2Data = [];
     var tempData = [];
     var humData = [];
     var lightData = [];
     
+    // Obtener epoch de inicio desde _timeline (se guarda en showDetail)
+    var epochStart = _timeline.sessionStartEpoch || 0;
+    var hasNTP = (epochStart > 0);
+    
     for (var i = startIdx; i < endIdx; i++) {
         var ts = _timeline.timestamps[i];
         var sec = Math.floor(ts / 1000);
-        var h = Math.floor(sec / 3600) % 24;
-        var m = Math.floor(sec / 60) % 60;
-        labels.push(String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'));
+        
+        if (hasNTP) {
+            // ✅ Hora REAL (convertir timestamp relativo a hora real)
+            var realTime = epochStart + sec;
+            var date = new Date(realTime * 1000);
+            var h = date.getHours();
+            var m = date.getMinutes();
+            labels.push(String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'));
+        } else {
+            // ❌ Fallback: tiempo relativo
+            var h = Math.floor(sec / 3600) % 24;
+            var m = Math.floor(sec / 60) % 60;
+            labels.push(String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'));
+        }
+        
         co2Data.push(_timeline.co2[i]);
         tempData.push(_timeline.temperature[i]);
         humData.push(_timeline.humidity[i]);
@@ -493,13 +512,21 @@ function updateCharts() {
                                 if (idx >= _timeline.timestamps.length) return '';
                                 var ts = _timeline.timestamps[idx];
                                 var sec = Math.floor(ts / 1000);
-                                var h = Math.floor(sec / 3600) % 24;
-                                var m = Math.floor(sec / 60) % 60;
-                                var s = Math.floor(sec % 60);
-                                return 'Tiempo: ' + 
-                                    String(h).padStart(2, '0') + ':' + 
-                                    String(m).padStart(2, '0') + ':' + 
-                                    String(s).padStart(2, '0');
+                                if (hasNTP) {
+                                    var realTime = epochStart + sec;
+                                    var date = new Date(realTime * 1000);
+                                    return 'Hora: ' + String(date.getHours()).padStart(2,'0') + ':' + 
+                                           String(date.getMinutes()).padStart(2,'0') + ':' + 
+                                           String(date.getSeconds()).padStart(2,'0');
+                                } else {
+                                    var h = Math.floor(sec / 3600) % 24;
+                                    var m = Math.floor(sec / 60) % 60;
+                                    var s = Math.floor(sec % 60);
+                                    return 'Tiempo: ' + 
+                                        String(h).padStart(2, '0') + ':' + 
+                                        String(m).padStart(2, '0') + ':' + 
+                                        String(s).padStart(2, '0');
+                                }
                             },
                             label: function(tooltipItem) {
                                 return label + ': ' + tooltipItem.yLabel.toFixed(1) + ' ' + (unit || '');
@@ -636,11 +663,19 @@ async function showDetail(sid) {
     if (alerts.alerts && alerts.alerts.length > 0) {
       alerts.alerts.forEach(function(a){ alertsHtml += '<li><strong>'+(a.time||'')+'</strong> → '+(a.type||'')+': '+(a.message||'')+'</li>'; });
     } else { alertsHtml = '<li class="ok">Sin alertas registradas</li>'; }
+    
+    // ================================================================
+    // MODIFICACIÓN: Quitar "→ Condiciones óptimas" de la best hour
+    // Ahora solo muestra la franja horaria sin mensaje adicional
+    // ================================================================
     var bestHour = '--';
-    if (stats.bestHour && stats.bestHour.start !== undefined) {
-      var fmt = function(s){ return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); };
-      bestHour = fmt(stats.bestHour.start)+' – '+fmt(stats.bestHour.end)+' → Condiciones óptimas';
+    if (stats.bestHour && stats.bestHour.display && stats.bestHour.display !== '') {
+        bestHour = stats.bestHour.display;
+    } else if (stats.bestHour && stats.bestHour.start !== undefined) {
+        var fmt = function(s){ return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); };
+        bestHour = fmt(stats.bestHour.start)+' – '+fmt(stats.bestHour.end);
     }
+    
     var recsHtml = '';
     if (stats.recommendations && stats.recommendations.length > 0) {
       stats.recommendations.forEach(function(rec){ recsHtml += '<div class="rec-item"><span class="rec-time">'+(rec.time||'')+'</span><span class="rec-text">'+(rec.message||rec)+'</span></div>'; });
@@ -674,12 +709,16 @@ async function showDetail(sid) {
       +'<div class="sb"><h3>Mejor franja horaria detectada</h3><div class="best-hour">'+bestHour+'</div></div>'
       +'<div class="sb"><h3>Recomendaciones generadas</h3>'+recsHtml+'</div>';
 
+    // ================================================================
+    // EXTRAER DATOS DEL CSV Y GUARDAR sessionStartEpoch
+    // ================================================================
     _timeline = { 
         timestamps: [], 
         co2: [], 
         temperature: [], 
         humidity: [], 
-        light: [] 
+        light: [],
+        sessionStartEpoch: stats.sessionStartEpoch || 0  // ← Guardar epoch para gráficas
     };
     
     var lines = csvText.split('\n');

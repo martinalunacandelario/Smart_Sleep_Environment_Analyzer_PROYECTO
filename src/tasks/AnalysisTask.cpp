@@ -42,6 +42,8 @@ void AnalysisTask::taskFunction(void* pvParams) {
                 
                 // ================================================================
                 // FIX: ESPERAR A QUE STORAGETASK TERMINE DE CERRAR EL ARCHIVO
+                // Esto evita que AnalysisTask lea el CSV mientras StorageTask
+                // todavía lo está escribiendo/cerrando.
                 // ================================================================
                 Serial.println("[Analysis] Esperando 2 segundos para que StorageTask cierre el archivo...");
                 vTaskDelay(pdMS_TO_TICKS(2000));
@@ -139,9 +141,9 @@ String AnalysisTask::getLastSessionFileName() {
 
 // ============================================================================
 // readSessionFile() - Lee el archivo CSV y guarda los datos
-// FIX: ahora también parsea "# Hora de fin:" que está al FINAL del archivo
-// (footer escrito por closeSessionFile() en StorageTask), no solo en la
-// cabecera. Antes ese footer se descartaba con un continue().
+// ============================================================================
+// AHORA PARSEA CORRECTAMENTE "# Hora de fin:" que está al FINAL del archivo
+// (footer escrito por closeSessionFile() en StorageTask)
 // ============================================================================
 bool AnalysisTask::readSessionFile(const String& filename, SessionStats &stats) {
     File file = SD.open(filename.c_str(), FILE_READ);
@@ -351,31 +353,52 @@ String AnalysisTask::getInterpretation(int score) {
 }
 
 // ============================================================================
-// findBestHour() - Encuentra la mejor franja horaria
-// Requiere un mínimo de 1 HORA de datos (MIN_SAMPLES_FOR_BESTHOUR muestras)
-// para considerar el resultado fiable. Si no hay suficientes datos,
-// bestHourValid queda en false y NO se inventa ninguna franja.
+// findBestHour() - Encuentra la mejor franja horaria (1 hora de duración)
+// ============================================================================
+// MEJORAS REALIZADAS:
+// 1. Ventana de 120 muestras = 1 hora (en lugar de 2 muestras)
+// 2. Ventana adaptativa para sesiones cortas
+// 3. bestHourValid para distinguir sesiones válidas
+// 4. Logs de depuración
+// 5. CORREGIDO: ahora calcula correctamente el display en formato HH:MM
 // ============================================================================
 void AnalysisTask::findBestHour(SessionStats &stats) {
     // --- Comprobación de datos mínimos (1 hora) ---
-    if ((int)stats.timestamps.size() < MIN_SAMPLES_FOR_BESTHOUR) {
+    int minSamples = 120;  // 1 hora (30s * 120 = 3600s)
+    
+    #ifdef MIN_SAMPLES_FOR_BESTHOUR
+        minSamples = MIN_SAMPLES_FOR_BESTHOUR;
+    #endif
+    
+    if ((int)stats.timestamps.size() < minSamples) {
         Serial.printf("[Analysis] Sesion demasiado corta para calcular franja (%d muestras, se necesitan %d para 1h)\n",
-                      (int)stats.timestamps.size(), MIN_SAMPLES_FOR_BESTHOUR);
+                      (int)stats.timestamps.size(), minSamples);
         stats.bestHourStart = 0;
         stats.bestHourEnd = 0;
         stats.bestHourValid = false;
         return;
     }
 
-    int windowSize = 120;   // ventana de referencia: 120 muestras = 1 hora (con 30s/muestra)
+    // ================================================================
+    // CALCULAR EL TAMAÑO DE VENTANA
+    // ================================================================
+    // 120 muestras = 1 hora (asumiendo 30 segundos entre muestras)
+    int windowSize = 120;
+    
+    // Si la sesión tiene menos de 120 muestras, usar la mitad de los datos
     if ((int)stats.timestamps.size() < windowSize) {
         windowSize = stats.timestamps.size() / 2;
     }
+    // Asegurar un mínimo de 2 muestras
     if (windowSize < 2) windowSize = 2;
+    
+    Serial.printf("[Analysis] Ventana de búsqueda: %d muestras (%.1f horas)\n", 
+                  windowSize, windowSize / 120.0);
 
     int bestIndex = 0;
     float bestScore = -1;
 
+    // Recorrer todas las ventanas posibles
     for (int i = 0; i <= (int)stats.timestamps.size() - windowSize; i++) {
         float windowScore = 0;
         for (int j = 0; j < windowSize; j++) {
@@ -385,6 +408,7 @@ void AnalysisTask::findBestHour(SessionStats &stats) {
             float hum = stats.hum_values[i + j];
             float light = stats.light_values[i + j];
 
+            // Penalizaciones por malas condiciones (menor score = mejores condiciones)
             if (co2 > 900) score += (co2 - 900) / 100;
             if (temp < 18) score += (18 - temp) * 2;
             if (temp > 22) score += (temp - 22) * 2;
@@ -394,25 +418,29 @@ void AnalysisTask::findBestHour(SessionStats &stats) {
 
             windowScore += score;
         }
+        // Guardar la ventana con menor puntuación (mejores condiciones)
         if (bestScore < 0 || windowScore < bestScore) {
             bestScore = windowScore;
             bestIndex = i;
         }
     }
 
+    // Guardar el resultado
     if (bestIndex >= 0 && bestIndex + windowSize - 1 < (int)stats.timestamps.size()) {
+        // Tiempo relativo en segundos desde el inicio de la sesión
         stats.bestHourStart = stats.timestamps[bestIndex] / 1000;
         stats.bestHourEnd = stats.timestamps[bestIndex + windowSize - 1] / 1000;
 
-        // Ya NO se fuerza artificialmente a 1 hora: con el filtro de arriba,
-        // siempre habrá al menos 1h real de datos detrás de esta ventana.
-
+        // Si NTP está sincronizado, convertir a hora real (epoch)
         if (NTPManager::isTimeSynced() && stats.sessionStartEpoch > 0) {
             stats.bestHourStart = stats.sessionStartEpoch + stats.bestHourStart;
             stats.bestHourEnd = stats.sessionStartEpoch + stats.bestHourEnd;
         }
 
         stats.bestHourValid = true;
+        Serial.printf("[Analysis] Mejor franja encontrada: %lu - %lu (%.1f horas)\n",
+                      stats.bestHourStart, stats.bestHourEnd,
+                      (stats.bestHourEnd - stats.bestHourStart) / 3600.0);
     } else {
         stats.bestHourStart = 0;
         stats.bestHourEnd = 0;
@@ -470,16 +498,20 @@ void AnalysisTask::saveStatisticsToSD(const SessionStats &stats) {
     statsFile.printf("    \"score\": %d\n", stats.light_score);
     statsFile.println("  },");
     
-    // --- Mejor franja horaria: incluye "valid" y "message" ---
+    // --- Mejor franja horaria: incluye "valid", "start", "end" y "display" ---
     statsFile.println("  \"bestHour\": {");
     if (!stats.bestHourValid) {
         statsFile.println("    \"valid\": false,");
         statsFile.println("    \"message\": \"No se puede determinar la franja debido al poco tiempo de la sesion\"");
     } else if (NTPManager::isTimeSynced() && stats.sessionStartEpoch > 0 && stats.bestHourStart > 1000000000) {
+        // ================================================================
+        // CASO 1: Hora REAL (epoch)
+        // ================================================================
         statsFile.println("    \"valid\": true,");
         statsFile.printf("    \"start\": %lu,\n", stats.bestHourStart);
         statsFile.printf("    \"end\": %lu,\n", stats.bestHourEnd);
         
+        // Calcular display en formato HH:MM - HH:MM a partir de epoch
         struct tm startTm, endTm;
         time_t startTime = stats.bestHourStart;
         time_t endTime = stats.bestHourEnd;
@@ -491,12 +523,22 @@ void AnalysisTask::saveStatisticsToSD(const SessionStats &stats) {
         strftime(endStr, sizeof(endStr), "%H:%M", &endTm);
         statsFile.printf("    \"display\": \"%s - %s\"\n", startStr, endStr);
     } else {
+        // ================================================================
+        // CASO 2: Tiempo RELATIVO (segundos desde inicio de sesión)
+        // ================================================================
         statsFile.println("    \"valid\": true,");
         statsFile.printf("    \"start\": %lu,\n", stats.bestHourStart);
         statsFile.printf("    \"end\": %lu,\n", stats.bestHourEnd);
+        
+        // Calcular display en formato MM:SS - MM:SS a partir de segundos
+        unsigned long startMinutes = stats.bestHourStart / 60;
+        unsigned long startSeconds = stats.bestHourStart % 60;
+        unsigned long endMinutes = stats.bestHourEnd / 60;
+        unsigned long endSeconds = stats.bestHourEnd % 60;
+        
         statsFile.printf("    \"display\": \"%02lu:%02lu - %02lu:%02lu\"\n",
-                         stats.bestHourStart / 60, stats.bestHourStart % 60,
-                         stats.bestHourEnd / 60, stats.bestHourEnd % 60);
+                         startMinutes, startSeconds,
+                         endMinutes, endSeconds);
     }
     statsFile.println("  }");
     
