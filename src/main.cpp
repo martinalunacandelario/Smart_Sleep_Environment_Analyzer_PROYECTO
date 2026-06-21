@@ -7,7 +7,8 @@
 #include "tasks/task_Analysis.h"
 #include "tasks/task_WebServer.h"
 #include "SessionManager.h"
-#include "../lib/drivers/NTPManager.h"  // <-- CAMBIADO
+#include "network/NTPManager.h"
+#include "network/OTAManager.h"
 
 // ============================================================================
 // COLAS DE DATOS DE SENSORES (una por consumidor)
@@ -38,7 +39,11 @@ void setup() {
     SessionManager::init();
 
     // ================================================================
-    // INICIALIZAR NTP (DESPUÉS DE SessionManager, ANTES de las tareas)
+    // FIX: NTP PRIMERO. Esto es lo que realmente inicializa la pila
+    // WiFi del ESP32 (WiFi.mode() / WiFi.begin() / softAP()).
+    // OTA NO puede inicializarse antes de esto, porque ArduinoOTA
+    // depende de mDNS y de la interfaz WiFi ya activa. Si se llama
+    // antes, el ESP32 crashea y entra en boot loop.
     // ================================================================
     if (NTPManager::begin()) {
         Serial.println("[NTP] ✅ Red configurada correctamente");
@@ -49,6 +54,11 @@ void setup() {
         Serial.println("[NTP] ⚠️ No hay WiFi. La hora no será real.");
         Serial.println("[NTP] El sistema funcionará con tiempo desde encendido (millis) como fallback.");
     }
+
+    // ================================================================
+    // FIX: OTA AHORA, con el WiFi ya levantado por NTPManager::begin()
+    // ================================================================
+    OTAManager::begin("SmartSleep");
 
     // ========================================================================
     // COLAS DE DATOS
@@ -131,5 +141,11 @@ void setup() {
 }
 
 void loop() {
+    // ================================================================
+    // OTA fallback: ya se gestiona también dentro de WebServerTask,
+    // pero lo dejamos aquí también por seguridad.
+    // ================================================================
+   OTAManager::handle();
+    
     vTaskDelay(pdMS_TO_TICKS(1000));
 }

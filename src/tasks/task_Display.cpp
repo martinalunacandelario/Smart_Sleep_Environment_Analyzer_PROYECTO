@@ -1,6 +1,6 @@
 #include "task_Display.h"
 #include "../../include/config.h"
-#include "../../lib/drivers/NTPManager.h"  // <-- CAMBIADO
+#include "../network/NTPManager.h"  // <-- CAMBIADO
 #include <U8g2lib.h>
 #include <Wire.h>
 

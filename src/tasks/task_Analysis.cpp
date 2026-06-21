@@ -1,6 +1,6 @@
 #include "task_Analysis.h"
 #include "../../include/config.h"
-#include "../../lib/drivers/NTPManager.h"
+#include "../network/NTPManager.h"
 #include <SPI.h>
 #include <SD.h>
 

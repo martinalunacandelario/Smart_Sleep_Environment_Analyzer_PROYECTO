@@ -1,6 +1,7 @@
 #include "task_WebServer.h"
 #include "../../include/config.h"
-#include "../../lib/drivers/NTPManager.h"
+#include "../network/NTPManager.h"
+#include "../network/OTAManager.h"       // <-- NUEVO: Para OTA
 #include <ArduinoJson.h>
 #include <SD.h>
 
@@ -822,7 +823,11 @@ void WebServerTask::start() {
 
 void WebServerTask::setupAccessPoint() {
     Serial.println("[Web] Configurando Access Point...");
-    WiFi.mode(WIFI_AP);
+    // FIX: WIFI_AP_STA en vez de WIFI_AP. NTPManager::begin() ya dejó el WiFi
+    // en modo AP_STA con el STA conectado a internet (para NTP). Si aquí
+    // forzamos solo WIFI_AP, se pierde la conexión STA y el NTP deja de
+    // tener acceso a internet a partir de este punto.
+    WiFi.mode(WIFI_AP_STA);
     bool ok = WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, AP_HIDDEN);
     if (ok) {
         Serial.printf("[Web] AP OK · SSID: %s · IP: %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
@@ -834,6 +839,7 @@ void WebServerTask::setupAccessPoint() {
 void WebServerTask::taskFunction(void* pvParams) {
     while (true) {
         server.handleClient();
+        OTAManager::handle();          // <-- NUEVO: Manejar OTA
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
