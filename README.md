@@ -58,38 +58,45 @@ El sistema almacena los datos en una tarjeta microSD y los visualiza a través d
 ---
 
 ## 📁 Estructura del proyecto
-Smart_Sleep_Environment_Analyzer_PROYECTO/
-├── platformio.ini # Configuración de PlatformIO
-├── README.md # Este archivo
-├── include/
-│ └── config.h # Definiciones globales (pines, umbrales)
-├── lib/
-│ └── drivers/ # Drivers de bajo nivel
-│ ├── BH1750.cpp/h # Sensor de luz
-│ └── SCD41.cpp/h # Sensor de CO₂, temp, humedad
-├── src/
-│ ├── main.cpp # Punto de entrada del programa
-│ ├── SessionManager.cpp/h # Gestión de sesiones
-│ ├── network/ # Módulos de red
-│ │ ├── NTPManager.cpp/h # Sincronización horaria
-│ │ └── OTAManager.cpp/h # Actualización OTA
-│ └── tasks/ # Tareas FreeRTOS
-│ ├── task_Sensor.cpp/h # Lectura de sensores
-│ ├── task_Display.cpp/h # Pantalla OLED
-│ ├── task_Alert.cpp/h # Alertas, LEDs y buzzer
-│ ├── task_Storage.cpp/h # Almacenamiento en SD
-│ ├── task_Analysis.cpp/h # Procesamiento de datos
-│ ├── task_Button.cpp/h # Botón físico
-│ └── task_WebServer.cpp/h # Servidor web y API
-├── test/ # Tests (lógicos y de hardware)
-│ ├── test_logic/ # Tests de lógica de negocio
-│ └── test_*/ # Tests de cada componente
-└── docs/ # Documentación
-├── memoria.pdf
-├── esquema_electrico.pdf
-└── diagrama_bloques.png
+## 📁 Estructura del proyecto
 
-text
+```text
+Smart_Sleep_Environment_Analyzer_PROYECTO/
+├── platformio.ini              # Configuración de PlatformIO
+├── README.md                   # Este archivo
+├── include/
+│   └── config.h                # Definiciones globales (pines, umbrales)
+├── lib/
+│   └── drivers/                # Drivers de bajo nivel
+│       ├── BH1750.cpp          # Sensor de luz (Código fuente)
+│       ├── BH1750.h            # Sensor de luz (Cabecera)
+│       ├── SCD41.cpp           # Sensor de CO₂, temp, humedad (Código fuente)
+│       └── SCD41.h             # Sensor de CO₂, temp, humedad (Cabecera)
+├── src/
+│   ├── main.cpp                # Punto de entrada del programa
+│   ├── SessionManager.cpp      # Gestión de sesiones
+│   ├── SessionManager.h
+│   ├── network/                # Módulos de red
+│   │   ├── NTPManager.cpp      # Sincronización horaria
+│   │   ├── NTPManager.h
+│   │   ├── OTAManager.cpp      # Actualización OTA
+│   │   └── OTAManager.h
+│   └── tasks/                  # Tareas FreeRTOS
+│       ├── task_Sensor.cpp     # Lectura de sensores
+│       ├── task_Display.cpp    # Pantalla OLED
+│       ├── task_Alert.cpp      # Alertas, LEDs y buzzer
+│       ├── task_Storage.cpp    # Almacenamiento en SD
+│       ├── task_Analysis.cpp   # Procesamiento de datos
+│       ├── task_Button.cpp     # Botón físico
+│       └── task_WebServer.cpp  # Servidor web y API
+├── test/                       # Tests (lógicos y de hardware)
+│   ├── test_logic/             # Tests de lógica de negocio
+│   └── test_*/                 # Tests de cada componente
+└── docs/                       # Documentación
+    ├── memoria.pdf
+    ├── esquema_electrico.pdf
+    └── diagrama_bloques.png
+    
 
 ---
 
