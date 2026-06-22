@@ -1,6 +1,6 @@
 #include "task_Storage.h"
 #include "../../include/config.h"
-#include "../network/NTPManager.h"  // <-- CAMBIADO
+#include "../network/NTPManager.h"
 #include <SPI.h>
 #include <SD.h>
 
@@ -26,11 +26,39 @@ void StorageTask::start(QueueHandle_t sensorQueue, QueueHandle_t cmdQueue) {
     
     SPI.begin(SD_SCK, SD_MISO, SD_MOSI);
     
-    if (!initSD()) {
-        Serial.println("[Storage] ERROR: No se pudo inicializar la tarjeta SD");
-    } else {
-        Serial.println("[Storage] Tarjeta SD inicializada correctamente");
+    // ================================================================
+    // FIX: Reducir velocidad SPI para más estabilidad
+    // ================================================================
+    SPI.setFrequency(4000000);  // 4 MHz (más estable que 40 MHz)
+    
+    // ================================================================
+    // FIX: Reintentar hasta 10 veces con espera progresiva
+    // ================================================================
+    bool sdOk = false;
+    for (int i = 0; i < 10; i++) {
+        Serial.printf("[Storage] Intentando inicializar SD (intento %d/10)...\n", i + 1);
+        
+        // Esperar más en cada intento (200ms, 300ms, 400ms...)
+        delay(200 + i * 100);
+        
+        if (initSD()) {
+            sdOk = true;
+            Serial.println("[Storage] ✅ SD lista!");
+            break;
+        }
+        
+        // Si falla, resetear el bus SPI
+        SPI.end();
+        delay(100);
+        SPI.begin(SD_SCK, SD_MISO, SD_MOSI);
+        SPI.setFrequency(4000000);
+    }
+    
+    if (sdOk) {
         readSessionCounter();
+    } else {
+        Serial.println("[Storage] ⚠️ No se pudo inicializar la SD después de 10 intentos");
+        Serial.println("[Storage] El sistema funcionará sin almacenamiento");
     }
     
     xTaskCreatePinnedToCore(
@@ -48,9 +76,20 @@ void StorageTask::start(QueueHandle_t sensorQueue, QueueHandle_t cmdQueue) {
 // initSD() - Inicializa la tarjeta microSD
 // ============================================================================
 bool StorageTask::initSD() {
+    // ================================================================
+    // FIX: Esperar a que la SD se estabilice
+    // ================================================================
+    delay(500);
+    
+    // ================================================================
+    // FIX: Reintentar internamente si falla el primer intento
+    // ================================================================
     if (!SD.begin(SD_CS)) {
-        Serial.println("[Storage] Error al montar la tarjeta SD");
-        return false;
+        Serial.println("[Storage] Error al montar la tarjeta SD, reintentando...");
+        delay(1000);
+        if (!SD.begin(SD_CS)) {
+            return false;
+        }
     }
     
     uint8_t cardType = SD.cardType();
@@ -82,7 +121,7 @@ bool StorageTask::initSD() {
 }
 
 // ============================================================================
-// readSessionCounter() - Lee el contador de sesiones desde la SD
+// readSessionCounter()
 // ============================================================================
 void StorageTask::readSessionCounter() {
     char counterPath[64];
@@ -103,7 +142,7 @@ void StorageTask::readSessionCounter() {
 }
 
 // ============================================================================
-// saveSessionCounter() - Guarda el contador de sesiones en la SD
+// saveSessionCounter()
 // ============================================================================
 void StorageTask::saveSessionCounter() {
     char counterPath[64];
@@ -118,7 +157,7 @@ void StorageTask::saveSessionCounter() {
 }
 
 // ============================================================================
-// getCurrentDateTime() - Obtiene fecha y hora actual (NTP o millis)
+// getCurrentDateTime()
 // ============================================================================
 String StorageTask::getCurrentDateTime() {
     if (NTPManager::isTimeSynced()) {
@@ -132,7 +171,7 @@ String StorageTask::getCurrentDateTime() {
 }
 
 // ============================================================================
-// generateFileName() - Genera nombre de archivo
+// generateFileName()
 // ============================================================================
 String StorageTask::generateFileName() {
     char filename[128];
@@ -145,14 +184,20 @@ String StorageTask::generateFileName() {
 }
 
 // ============================================================================
-// createSessionFile() - Crea un nuevo archivo CSV para la sesión
+// createSessionFile()
 // ============================================================================
 bool StorageTask::createSessionFile() {
     _currentFileName = generateFileName();
     
+    // ================================================================
+    // FIX: Si el archivo ya existe, añadir sufijo en lugar de fallar
+    // ================================================================
     if (SD.exists(_currentFileName)) {
-        Serial.printf("[Storage] El archivo ya existe: %s\n", _currentFileName.c_str());
-        return false;
+        Serial.printf("[Storage] El archivo ya existe: %s, creando con sufijo...\n", _currentFileName.c_str());
+        // Añadir timestamp al nombre
+        String newName = _currentFileName.substring(0, _currentFileName.lastIndexOf('.'));
+        newName += "_" + String(millis()) + ".csv";
+        _currentFileName = newName;
     }
     
     _currentSessionFile = SD.open(_currentFileName, FILE_WRITE);
@@ -181,7 +226,7 @@ bool StorageTask::createSessionFile() {
 }
 
 // ============================================================================
-// closeSessionFile() - Cierra el archivo de la sesión actual
+// closeSessionFile()
 // ============================================================================
 void StorageTask::closeSessionFile() {
     if (_currentSessionFile) {
@@ -203,7 +248,7 @@ void StorageTask::closeSessionFile() {
 }
 
 // ============================================================================
-// writeDataToSD() - Escribe una lectura de sensores en el archivo CSV
+// writeDataToSD()
 // ============================================================================
 void StorageTask::writeDataToSD(const SensorData &data) {
     if (!_currentSessionFile) {
@@ -213,18 +258,27 @@ void StorageTask::writeDataToSD(const SensorData &data) {
     
     unsigned long relativeTime = data.timestamp - _sessionStartTime;
     
-    _currentSessionFile.printf("%lu,%.0f,%.1f,%.0f,%.0f\n",
-                               relativeTime,
-                               data.co2,
-                               data.temperature,
-                               data.humidity,
-                               data.light);
-    
-    _currentSessionFile.flush();
+    // ================================================================
+    // FIX: Reintentar escritura si falla
+    // ================================================================
+    for (int i = 0; i < 3; i++) {
+        size_t bytes = _currentSessionFile.printf("%lu,%.0f,%.1f,%.0f,%.0f\n",
+                                                   relativeTime,
+                                                   data.co2,
+                                                   data.temperature,
+                                                   data.humidity,
+                                                   data.light);
+        if (bytes > 0) {
+            _currentSessionFile.flush();
+            return;
+        }
+        delay(50);
+    }
+    Serial.println("[Storage] Error al escribir en la SD");
 }
 
 // ============================================================================
-// taskFunction() - Bucle principal de la tarea
+// taskFunction()
 // ============================================================================
 void StorageTask::taskFunction(void* pvParams) {
     SensorData newData;
@@ -243,10 +297,24 @@ void StorageTask::taskFunction(void* pvParams) {
                 _sessionStartTime = millis();
                 _sessionCounter++;
                 saveSessionCounter();
-                if (!createSessionFile()) {
-                    Serial.println("[Storage] Error al crear archivo para la sesión");
-                } else {
+                
+                // ================================================================
+                // FIX: Reintentar crear archivo hasta 3 veces
+                // ================================================================
+                bool fileCreated = false;
+                for (int i = 0; i < 3; i++) {
+                    if (createSessionFile()) {
+                        fileCreated = true;
+                        break;
+                    }
+                    Serial.printf("[Storage] Reintentando crear archivo (%d/3)...\n", i + 1);
+                    delay(500);
+                }
+                
+                if (fileCreated) {
                     Serial.printf("[Storage] Sesión #%lu iniciada\n", _sessionCounter);
+                } else {
+                    Serial.println("[Storage] Error al crear archivo para la sesión");
                 }
             } 
             else if (!cmd.sessionActive && _sessionActive) {
@@ -261,7 +329,7 @@ void StorageTask::taskFunction(void* pvParams) {
 }
 
 // ============================================================================
-// getSessionCounterPtr() - Devuelve puntero al contador de sesiones
+// getSessionCounterPtr()
 // ============================================================================
 unsigned long* StorageTask::getSessionCounterPtr() {
     return &_sessionCounter;
