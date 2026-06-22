@@ -18,6 +18,7 @@ unsigned long AlertTask::_sessionStartTime = 0;
 
 File AlertTask::_alertsFile;
 bool AlertTask::_alertsFileOpen = false;
+unsigned long AlertTask::_lastSessionId = 0;  // ✅ NUEVO: Inicialización
 
 // ============================================================================
 // start() - Inicializa pines y crea la tarea
@@ -144,14 +145,38 @@ String AlertTask::getCurrentTimeString() {
 }
 
 // ============================================================================
-// createAlertsFile() - Crea el archivo JSON al iniciar sesión
+// createAlertsFile() - Crea el archivo JSON al iniciar sesión (VERSIÓN CORREGIDA)
 // ============================================================================
 void AlertTask::createAlertsFile() {
-    if (_alertsFileOpen || _sessionCounter == nullptr) return;
+    // ============================================================
+    // 🔥 PASO 1: SIEMPRE forzar cierre del archivo anterior
+    // ============================================================
+    if (_alertsFileOpen) {
+        Serial.println("[Alert] ⚠️ Cerrando archivo anterior...");
+        if (_alertsFile) {
+            _alertsFile.println("\n  ]");
+            _alertsFile.println("}");
+            _alertsFile.close();
+        }
+        _alertsFileOpen = false;
+    }
 
+    // ============================================================
+    // PASO 2: Verificar que el contador existe
+    // ============================================================
+    if (_sessionCounter == nullptr) {
+        Serial.println("[Alert] ❌ _sessionCounter es NULL");
+        return;
+    }
+
+    // ============================================================
+    // PASO 3: Crear el archivo NUEVO con el número de sesión actual
+    // ============================================================
     char filePath[64];
     snprintf(filePath, sizeof(filePath), "%s/session_%03lu_alerts.json",
              SD_BASE_PATH, *_sessionCounter);
+
+    Serial.printf("[Alert] 📂 Creando archivo: %s\n", filePath);
 
     _alertsFile = SD.open(filePath, FILE_WRITE);
     if (_alertsFile) {
@@ -159,9 +184,10 @@ void AlertTask::createAlertsFile() {
         _alertsFile.printf("  \"sessionId\": %lu,\n", *_sessionCounter);
         _alertsFile.println("  \"alerts\": [");
         _alertsFileOpen = true;
-        Serial.printf("[Alert] Archivo de alertas creado: %s\n", filePath);
+        _lastSessionId = *_sessionCounter;  // ✅ Guardar ID de esta sesión
+        Serial.printf("[Alert] ✅ Archivo creado: %s\n", filePath);
     } else {
-        Serial.println("[Alert] Error al crear archivo de alertas");
+        Serial.printf("[Alert] ❌ Error al crear archivo: %s\n", filePath);
     }
 }
 
@@ -170,33 +196,64 @@ void AlertTask::createAlertsFile() {
 // ============================================================================
 void AlertTask::closeAlertsFile() {
     if (_alertsFileOpen && _alertsFile) {
+        Serial.println("[Alert] 📝 Cerrando archivo...");
         _alertsFile.println("\n  ]");
         _alertsFile.println("}");
         _alertsFile.close();
         _alertsFileOpen = false;
-        Serial.println("[Alert] Archivo de alertas cerrado");
+        Serial.println("[Alert] ✅ Archivo de alertas cerrado");
+    } else {
+        Serial.println("[Alert] ⚠️ Archivo ya estaba cerrado");
     }
 }
 
 // ============================================================================
-// saveAlertToSD() - Guarda una alerta en el archivo JSON
+// saveAlertToSD() - Guarda una alerta en el archivo JSON (VERSIÓN CORREGIDA)
 // ============================================================================
 void AlertTask::saveAlertToSD(const char* type, const char* message) {
-    if (!_alertsFileOpen || !_alertsFile || _sessionCounter == nullptr) return;
-
-    static unsigned long lastSessionId = 999999;
-    static bool firstAlert = true;
-
-    if (lastSessionId != *_sessionCounter) {
-        firstAlert = true;
-        lastSessionId = *_sessionCounter;
+    // ============================================================
+    // 🔥 PASO 1: Verificar que el archivo está abierto
+    // ============================================================
+    if (!_alertsFileOpen) {
+        Serial.println("[Alert] ⚠️ Archivo cerrado, creando nuevo...");
+        createAlertsFile();
+        if (!_alertsFileOpen) {
+            Serial.println("[Alert] ❌ No se pudo crear archivo");
+            return;
+        }
     }
 
+    // ============================================================
+    // 🔥 PASO 2: Verificar que la sesión NO ha cambiado
+    // ============================================================
+    if (_lastSessionId != *_sessionCounter) {
+        Serial.printf("[Alert] ⚠️ Sesión cambió (%lu → %lu), recreando archivo...\n",
+                      _lastSessionId, *_sessionCounter);
+        createAlertsFile();  // Esto cierra el anterior y crea el nuevo
+        if (!_alertsFileOpen) return;
+    }
+
+    // ============================================================
+    // PASO 3: Si llegamos aquí, el archivo es el correcto
+    // ============================================================
+    if (!_alertsFile || _sessionCounter == nullptr) return;
+
+    static bool firstAlert = true;
+    static unsigned long cachedSessionId = 0;
+
+    // Resetear firstAlert si cambió la sesión
+    if (cachedSessionId != *_sessionCounter) {
+        firstAlert = true;
+        cachedSessionId = *_sessionCounter;
+    }
+
+    // Añadir coma si no es la primera alerta
     if (!firstAlert) {
         _alertsFile.println(",");
     }
     firstAlert = false;
 
+    // Guardar la alerta
     String timeStr = getCurrentTimeString();
     unsigned long elapsed = millis() - _sessionStartTime;
 
@@ -208,7 +265,7 @@ void AlertTask::saveAlertToSD(const char* type, const char* message) {
     _alertsFile.printf("    }");
     _alertsFile.flush();
 
-    Serial.printf("[Alert] Alerta guardada: %s - %s (Hora: %s)\n", type, message, timeStr.c_str());
+    Serial.printf("[Alert] 💾 Alerta guardada: %s - %s (Hora: %s)\n", type, message, timeStr.c_str());
 }
 
 // ============================================================================

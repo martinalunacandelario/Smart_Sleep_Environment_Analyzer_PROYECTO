@@ -72,6 +72,7 @@ private:
     // Archivo JSON de alertas en la microSD
     static File  _alertsFile;                   // Archivo abierto
     static bool  _alertsFileOpen;               // true si el archivo está abierto
+    static unsigned long _lastSessionId;        // ✅ NUEVO: ID de la última sesión guardada
 
     // ==========================================================================
     // MÉTODOS PRIVADOS
