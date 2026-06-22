@@ -97,7 +97,7 @@ Smart_Sleep_Environment_Analyzer_PROYECTO/
     ├── esquema_electrico.pdf
     └── diagrama_bloques.png
     
-
+```
 ---
 
 ## 🔧 Instalación y configuración
@@ -224,8 +224,8 @@ esquema_electrico.pdf — Esquema de conexiones
 
 diagrama_bloques.png — Arquitectura del software
 
-👥 Autores
-Martina Luna
+👥 Autores:
 
+Martina Luna
 Gerard Bustillo
 
